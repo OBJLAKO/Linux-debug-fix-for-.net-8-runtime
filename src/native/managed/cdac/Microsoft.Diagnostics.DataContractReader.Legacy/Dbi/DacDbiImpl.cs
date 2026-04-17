@@ -1088,10 +1088,159 @@ public sealed unsafe partial class DacDbiImpl : IDacDbiInterface
         => _legacy is not null ? _legacy.GetObjectFields(id, celt, layout, pceltFetched) : HResults.E_NOTIMPL;
 
     public int GetTypeLayout(nint id, COR_TYPE_LAYOUT* pLayout)
-        => _legacy is not null ? _legacy.GetTypeLayout(id, pLayout) : HResults.E_NOTIMPL;
+    {
+        if (pLayout is null)
+            return HResults.E_POINTER;
 
-    public int GetArrayLayout(nint id, nint pLayout)
-        => _legacy is not null ? _legacy.GetArrayLayout(id, pLayout) : HResults.E_NOTIMPL;
+        *pLayout = default;
+        if (id == 0)
+            return CorDbgHResults.CORDBG_E_CLASS_NOT_LOADED;
+
+        int hr = HResults.S_OK;
+        try
+        {
+            IRuntimeTypeSystem rts = _target.Contracts.RuntimeTypeSystem;
+            TypeHandle typeHandle = rts.GetTypeHandle(new TargetPointer((ulong)id));
+            CorElementType elementType = rts.IsString(typeHandle) ? CorElementType.String : rts.GetSignatureCorElementType(typeHandle);
+
+            pLayout->parentID.token1 = rts.GetParentMethodTable(typeHandle).Value;
+            pLayout->parentID.token2 = 0;
+            pLayout->objectSize = rts.GetBaseSize(typeHandle);
+            pLayout->numFields = rts.GetNumInstanceFields(typeHandle);
+            pLayout->boxOffset = rts.IsObjRef(typeHandle) ? 0u : (uint)_target.PointerSize;
+            pLayout->type = (int)elementType;
+        }
+        catch (System.Exception ex)
+        {
+            hr = ex.HResult;
+        }
+
+#if DEBUG
+        if (_legacy is not null)
+        {
+            COR_TYPE_LAYOUT resultLocal;
+            int hrLocal = _legacy.GetTypeLayout(id, &resultLocal);
+            Debug.ValidateHResult(hr, hrLocal);
+            if (hr == HResults.S_OK)
+            {
+                Debug.Assert(pLayout->parentID.token1 == resultLocal.parentID.token1);
+                Debug.Assert(pLayout->parentID.token2 == resultLocal.parentID.token2);
+                Debug.Assert(pLayout->objectSize == resultLocal.objectSize);
+                Debug.Assert(pLayout->numFields == resultLocal.numFields);
+                Debug.Assert(pLayout->boxOffset == resultLocal.boxOffset);
+                Debug.Assert(pLayout->type == resultLocal.type);
+            }
+        }
+#endif
+
+        return hr;
+    }
+
+    public int GetArrayLayout(nint id, COR_ARRAY_LAYOUT* pLayout)
+    {
+        if (pLayout is null)
+            return HResults.E_POINTER;
+
+        *pLayout = default;
+        if (id == 0)
+            return CorDbgHResults.CORDBG_E_CLASS_NOT_LOADED;
+
+        int hr = HResults.S_OK;
+        try
+        {
+            IRuntimeTypeSystem rts = _target.Contracts.RuntimeTypeSystem;
+            TypeHandle arrayOrStringTypeHandle = rts.GetTypeHandle(new TargetPointer((ulong)id));
+            uint pointerSize = (uint)_target.PointerSize;
+
+            if (rts.IsString(arrayOrStringTypeHandle))
+            {
+                TypeHandle charTypeHandle = rts.GetPrimitiveType(CorElementType.Char);
+                pLayout->componentID.token1 = charTypeHandle.Address.Value;
+                pLayout->componentID.token2 = 0;
+                pLayout->componentType = CorElementType.Char;
+                pLayout->firstElementOffset = pointerSize + sizeof(uint);
+                pLayout->elementSize = sizeof(char);
+                pLayout->countOffset = pointerSize;
+                pLayout->rankSize = sizeof(uint);
+                pLayout->numRanks = 1;
+                pLayout->rankOffset = pointerSize;
+            }
+            else
+            {
+                if (!rts.IsArray(arrayOrStringTypeHandle, out uint rank))
+                    throw Marshal.GetExceptionForHR(HResults.E_INVALIDARG)!;
+
+                TypeHandle componentTypeHandle = rts.GetTypeParam(arrayOrStringTypeHandle);
+                CorElementType componentType = rts.IsString(componentTypeHandle) ? CorElementType.String : rts.GetSignatureCorElementType(componentTypeHandle);
+                TypeHandle componentIdTypeHandle = componentTypeHandle;
+                if (componentType is CorElementType.Byref or CorElementType.Ptr or CorElementType.FnPtr)
+                {
+                    componentType = CorElementType.I;
+                    componentIdTypeHandle = rts.GetPrimitiveType(CorElementType.I);
+                }
+
+                pLayout->componentID.token1 = componentIdTypeHandle.Address.Value;
+                pLayout->componentID.token2 = 0;
+                pLayout->componentType = componentType;
+                pLayout->rankSize = sizeof(uint);
+                pLayout->numRanks = rank;
+                pLayout->rankOffset = rank > 1 ? pointerSize * 2 : pointerSize;
+                pLayout->countOffset = pointerSize;
+                pLayout->firstElementOffset = (uint)_target.GetTypeInfo(DataType.Array).Size!.Value;
+
+                if (rts.IsObjRef(componentTypeHandle))
+                {
+                    pLayout->elementSize = pointerSize;
+                }
+                else if (rts.IsPrimitive(componentTypeHandle) || componentType == CorElementType.String)
+                {
+                    pLayout->elementSize = GetPrimitiveTypeSize(componentType);
+                }
+                else
+                {
+                    pLayout->elementSize = rts.GetComponentSize(arrayOrStringTypeHandle);
+                }
+            }
+        }
+        catch (System.Exception ex)
+        {
+            hr = ex.HResult;
+        }
+
+#if DEBUG
+        if (_legacy is not null)
+        {
+            COR_ARRAY_LAYOUT resultLocal;
+            int hrLocal = _legacy.GetArrayLayout(id, &resultLocal);
+            Debug.ValidateHResult(hr, hrLocal);
+            if (hr == HResults.S_OK)
+            {
+                Debug.Assert(pLayout->componentID.token1 == resultLocal.componentID.token1);
+                Debug.Assert(pLayout->componentID.token2 == resultLocal.componentID.token2);
+                Debug.Assert(pLayout->componentType == resultLocal.componentType);
+                Debug.Assert(pLayout->firstElementOffset == resultLocal.firstElementOffset);
+                Debug.Assert(pLayout->elementSize == resultLocal.elementSize);
+                Debug.Assert(pLayout->countOffset == resultLocal.countOffset);
+                Debug.Assert(pLayout->rankSize == resultLocal.rankSize);
+                Debug.Assert(pLayout->numRanks == resultLocal.numRanks);
+                Debug.Assert(pLayout->rankOffset == resultLocal.rankOffset);
+            }
+        }
+#endif
+
+        return hr;
+    }
+
+    private uint GetPrimitiveTypeSize(CorElementType elementType)
+        => elementType switch
+        {
+            CorElementType.Boolean or CorElementType.I1 or CorElementType.U1 => 1,
+            CorElementType.Char or CorElementType.I2 or CorElementType.U2 => 2,
+            CorElementType.I4 or CorElementType.U4 or CorElementType.R4 => 4,
+            CorElementType.I8 or CorElementType.U8 or CorElementType.R8 => 8,
+            CorElementType.I or CorElementType.U => (uint)_target.PointerSize,
+            _ => throw new ArgumentOutOfRangeException(nameof(elementType)),
+        };
 
     public int GetGCHeapInformation(COR_HEAPINFO* pHeapInfo)
     {

@@ -550,6 +550,15 @@ internal partial struct RuntimeTypeSystem_1 : IRuntimeTypeSystem
     public bool IsFreeObjectMethodTable(TypeHandle typeHandle) => FreeObjectMethodTablePointer == typeHandle.Address;
 
     public bool IsString(TypeHandle typeHandle) => !typeHandle.IsMethodTable() ? false : _methodTables[typeHandle.Address].Flags.IsString;
+    public bool IsObjRef(TypeHandle typeHandle)
+    {
+        CorElementType elementType = GetSignatureCorElementType(typeHandle);
+        return elementType is CorElementType.String or CorElementType.Class or CorElementType.Array or CorElementType.Object or CorElementType.SzArray;
+    }
+
+    public bool IsPrimitive(TypeHandle typeHandle)
+        => typeHandle.IsMethodTable() && _methodTables[typeHandle.Address].Flags.GetFlag(MethodTableFlags_1.WFLAGS_HIGH.Category_Mask) == MethodTableFlags_1.WFLAGS_HIGH.Category_TruePrimitive;
+
     public bool ContainsGCPointers(TypeHandle typeHandle) => !typeHandle.IsMethodTable() ? false : _methodTables[typeHandle.Address].Flags.ContainsGCPointers;
     public bool RequiresAlign8(TypeHandle typeHandle) => !typeHandle.IsMethodTable() ? false : _methodTables[typeHandle.Address].Flags.RequiresAlign8;
     public bool IsContinuation(TypeHandle typeHandle) => typeHandle.IsMethodTable()

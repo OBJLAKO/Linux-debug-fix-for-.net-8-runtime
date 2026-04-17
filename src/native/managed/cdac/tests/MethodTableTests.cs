@@ -510,6 +510,97 @@ public class MethodTableTests
     }
 
     [Theory]
+    [ClassData(typeof(MockTarget.StdArch))]
+    public void IsObjRef_ReturnsExpectedValues(MockTarget.Architecture arch)
+    {
+        TargetPointer objectTypePtr = default;
+        TargetPointer stringTypePtr = default;
+        TargetPointer szArrayTypePtr = default;
+        TargetPointer truePrimitiveTypePtr = default;
+
+        TestPlaceholderTarget target = CreateTarget(
+            arch,
+            rtsBuilder =>
+            {
+                TargetTestHelpers helpers = rtsBuilder.Builder.TargetTestHelpers;
+                objectTypePtr = rtsBuilder.SystemObjectMethodTable.Address;
+
+                MockEEClass stringEEClass = rtsBuilder.AddEEClass("System.String");
+                MockMethodTable stringMethodTable = rtsBuilder.AddMethodTable("System.String");
+                stringMethodTable.MTFlags = (uint)MethodTableFlags_1.WFLAGS_HIGH.HasComponentSize | 2;
+                stringMethodTable.BaseSize = helpers.StringBaseSize;
+                stringMethodTable.ParentMethodTable = objectTypePtr;
+                stringTypePtr = stringMethodTable.Address;
+                stringEEClass.MethodTable = stringTypePtr;
+                stringMethodTable.EEClassOrCanonMT = stringEEClass.Address;
+
+                MockEEClass szArrayEEClass = rtsBuilder.AddEEClass("System.Int32[]");
+                MockMethodTable szArrayMethodTable = rtsBuilder.AddMethodTable("System.Int32[]");
+                szArrayMethodTable.MTFlags = (uint)(MethodTableFlags_1.WFLAGS_HIGH.HasComponentSize
+                    | MethodTableFlags_1.WFLAGS_HIGH.Category_Array
+                    | MethodTableFlags_1.WFLAGS_HIGH.Category_IfArrayThenSzArray
+                    | 4);
+                szArrayMethodTable.BaseSize = helpers.ArrayBaseBaseSize;
+                szArrayMethodTable.ParentMethodTable = objectTypePtr;
+                szArrayTypePtr = szArrayMethodTable.Address;
+                szArrayEEClass.MethodTable = szArrayTypePtr;
+                szArrayMethodTable.EEClassOrCanonMT = szArrayEEClass.Address;
+
+                MockEEClass truePrimitiveEEClass = rtsBuilder.AddEEClass("System.IntPtr");
+                truePrimitiveEEClass.InternalCorElementType = (byte)CorElementType.I;
+                MockMethodTable truePrimitiveMethodTable = rtsBuilder.AddMethodTable("System.IntPtr");
+                truePrimitiveMethodTable.MTFlags = (uint)MethodTableFlags_1.WFLAGS_HIGH.Category_TruePrimitive;
+                truePrimitiveMethodTable.BaseSize = helpers.ObjectBaseSize;
+                truePrimitiveTypePtr = truePrimitiveMethodTable.Address;
+                truePrimitiveEEClass.MethodTable = truePrimitiveTypePtr;
+                truePrimitiveMethodTable.EEClassOrCanonMT = truePrimitiveEEClass.Address;
+            });
+
+        IRuntimeTypeSystem contract = target.Contracts.RuntimeTypeSystem;
+        Assert.True(contract.IsObjRef(contract.GetTypeHandle(objectTypePtr)));
+        Assert.True(contract.IsObjRef(contract.GetTypeHandle(stringTypePtr)));
+        Assert.True(contract.IsObjRef(contract.GetTypeHandle(szArrayTypePtr)));
+        Assert.False(contract.IsObjRef(contract.GetTypeHandle(truePrimitiveTypePtr)));
+    }
+
+    [Theory]
+    [ClassData(typeof(MockTarget.StdArch))]
+    public void IsPrimitive_UsesTruePrimitiveCategory(MockTarget.Architecture arch)
+    {
+        TargetPointer truePrimitiveTypePtr = default;
+        TargetPointer primitiveValueTypePtr = default;
+
+        TestPlaceholderTarget target = CreateTarget(
+            arch,
+            rtsBuilder =>
+            {
+                TargetTestHelpers helpers = rtsBuilder.Builder.TargetTestHelpers;
+
+                MockEEClass truePrimitiveEEClass = rtsBuilder.AddEEClass("System.IntPtr");
+                truePrimitiveEEClass.InternalCorElementType = (byte)CorElementType.I;
+                MockMethodTable truePrimitiveMethodTable = rtsBuilder.AddMethodTable("System.IntPtr");
+                truePrimitiveMethodTable.MTFlags = (uint)MethodTableFlags_1.WFLAGS_HIGH.Category_TruePrimitive;
+                truePrimitiveMethodTable.BaseSize = helpers.ObjectBaseSize;
+                truePrimitiveTypePtr = truePrimitiveMethodTable.Address;
+                truePrimitiveEEClass.MethodTable = truePrimitiveTypePtr;
+                truePrimitiveMethodTable.EEClassOrCanonMT = truePrimitiveEEClass.Address;
+
+                MockEEClass primitiveValueTypeEEClass = rtsBuilder.AddEEClass("EnumLike");
+                primitiveValueTypeEEClass.InternalCorElementType = (byte)CorElementType.I4;
+                MockMethodTable primitiveValueTypeMethodTable = rtsBuilder.AddMethodTable("EnumLike");
+                primitiveValueTypeMethodTable.MTFlags = (uint)MethodTableFlags_1.WFLAGS_HIGH.Category_PrimitiveValueType;
+                primitiveValueTypeMethodTable.BaseSize = helpers.ObjectBaseSize;
+                primitiveValueTypePtr = primitiveValueTypeMethodTable.Address;
+                primitiveValueTypeEEClass.MethodTable = primitiveValueTypePtr;
+                primitiveValueTypeMethodTable.EEClassOrCanonMT = primitiveValueTypeEEClass.Address;
+            });
+
+        IRuntimeTypeSystem contract = target.Contracts.RuntimeTypeSystem;
+        Assert.True(contract.IsPrimitive(contract.GetTypeHandle(truePrimitiveTypePtr)));
+        Assert.False(contract.IsPrimitive(contract.GetTypeHandle(primitiveValueTypePtr)));
+    }
+
+    [Theory]
     [MemberData(nameof(StdArchBool))]
     public void RequiresAlign8(MockTarget.Architecture arch, bool flagSet)
     {
