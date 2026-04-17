@@ -1107,6 +1107,7 @@ public sealed unsafe partial class DacDbiImpl : IDacDbiInterface
             pLayout->parentID.token2 = 0;
             pLayout->objectSize = rts.GetBaseSize(typeHandle);
             pLayout->numFields = rts.GetNumInstanceFields(typeHandle);
+            // Match native DAC semantics: object references are already boxed and all other types use pointer-size box offset.
             pLayout->boxOffset = rts.IsObjRef(typeHandle) ? 0u : (uint)_target.PointerSize;
             pLayout->type = (int)elementType;
         }
@@ -1175,6 +1176,8 @@ public sealed unsafe partial class DacDbiImpl : IDacDbiInterface
                 TypeHandle componentIdTypeHandle = componentTypeHandle;
                 if (componentType is CorElementType.Byref or CorElementType.Ptr or CorElementType.FnPtr)
                 {
+                    // Native DAC normalizes pointer-like component types to IntPtr metadata/type identity so
+                    // debugger type-display logic observes the same shape as legacy DAC.
                     componentType = CorElementType.I;
                     componentIdTypeHandle = rts.GetPrimitiveType(CorElementType.I);
                 }
@@ -1186,14 +1189,20 @@ public sealed unsafe partial class DacDbiImpl : IDacDbiInterface
                 pLayout->numRanks = rank;
                 pLayout->rankOffset = rank > 1 ? pointerSize * 2 : pointerSize;
                 pLayout->countOffset = pointerSize;
-                uint objectHeaderSize = (uint)_target.GetTypeInfo(DataType.ObjectHeader).Size!.Value;
+                Target.TypeInfo objectHeaderTypeInfo = _target.GetTypeInfo(DataType.ObjectHeader);
+                if (objectHeaderTypeInfo.Size is null)
+                    throw new InvalidOperationException($"{nameof(DataType.ObjectHeader)} size is unavailable.");
+                uint objectHeaderSize = (uint)objectHeaderTypeInfo.Size.Value;
                 pLayout->firstElementOffset = rts.GetBaseSize(arrayOrStringTypeHandle) - objectHeaderSize;
 
-                if (rts.IsObjRef(componentTypeHandle))
+                bool isObjRef = rts.IsObjRef(componentTypeHandle);
+                bool isPrimitiveLike = rts.IsPrimitive(componentTypeHandle) || componentType == CorElementType.String;
+
+                if (isObjRef)
                 {
                     pLayout->elementSize = pointerSize;
                 }
-                else if (rts.IsPrimitive(componentTypeHandle) || componentType == CorElementType.String)
+                else if (isPrimitiveLike)
                 {
                     pLayout->elementSize = GetPrimitiveTypeSize(componentType);
                 }
@@ -1239,6 +1248,7 @@ public sealed unsafe partial class DacDbiImpl : IDacDbiInterface
             CorElementType.Char or CorElementType.I2 or CorElementType.U2 => 2,
             CorElementType.I4 or CorElementType.U4 or CorElementType.R4 => 4,
             CorElementType.I8 or CorElementType.U8 or CorElementType.R8 => 8,
+            CorElementType.String => (uint)_target.PointerSize,
             CorElementType.I or CorElementType.U => (uint)_target.PointerSize,
             _ => throw new ArgumentOutOfRangeException(nameof(elementType)),
         };

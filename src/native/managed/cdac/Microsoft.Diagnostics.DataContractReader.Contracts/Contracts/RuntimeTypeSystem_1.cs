@@ -553,6 +553,7 @@ internal partial struct RuntimeTypeSystem_1 : IRuntimeTypeSystem
     public bool IsObjRef(TypeHandle typeHandle)
     {
         CorElementType elementType = GetSignatureCorElementType(typeHandle);
+        // Keep this aligned with CorTypeInfo::IsObjRef semantics for signature element types.
         return elementType is CorElementType.String or CorElementType.Class or CorElementType.Array or CorElementType.Object or CorElementType.SzArray;
     }
 
