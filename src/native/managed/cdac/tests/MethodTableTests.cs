@@ -536,10 +536,11 @@ public class MethodTableTests
 
                 MockEEClass szArrayEEClass = rtsBuilder.AddEEClass("System.Int32[]");
                 MockMethodTable szArrayMethodTable = rtsBuilder.AddMethodTable("System.Int32[]");
-                szArrayMethodTable.MTFlags = (uint)(MethodTableFlags_1.WFLAGS_HIGH.HasComponentSize
-                    | MethodTableFlags_1.WFLAGS_HIGH.Category_Array
-                    | MethodTableFlags_1.WFLAGS_HIGH.Category_IfArrayThenSzArray
-                    | 4);
+                szArrayMethodTable.MTFlags =
+                    (uint)MethodTableFlags_1.WFLAGS_HIGH.HasComponentSize
+                    | (uint)MethodTableFlags_1.WFLAGS_HIGH.Category_Array
+                    | (uint)MethodTableFlags_1.WFLAGS_HIGH.Category_IfArrayThenSzArray
+                    | 4;
                 szArrayMethodTable.BaseSize = helpers.ArrayBaseBaseSize;
                 szArrayMethodTable.ParentMethodTable = objectTypePtr;
                 szArrayTypePtr = szArrayMethodTable.Address;

@@ -1186,7 +1186,8 @@ public sealed unsafe partial class DacDbiImpl : IDacDbiInterface
                 pLayout->numRanks = rank;
                 pLayout->rankOffset = rank > 1 ? pointerSize * 2 : pointerSize;
                 pLayout->countOffset = pointerSize;
-                pLayout->firstElementOffset = (uint)_target.GetTypeInfo(DataType.Array).Size!.Value;
+                uint objectHeaderSize = (uint)_target.GetTypeInfo(DataType.ObjectHeader).Size!.Value;
+                pLayout->firstElementOffset = rts.GetBaseSize(arrayOrStringTypeHandle) - objectHeaderSize;
 
                 if (rts.IsObjRef(componentTypeHandle))
                 {

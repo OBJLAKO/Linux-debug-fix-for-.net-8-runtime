@@ -91,7 +91,7 @@ public class DacDbiObjectDumpTests : DumpTestBase
         Assert.Equal(expectedComponentType, layout.componentType);
         Assert.Equal((uint)Target.PointerSize, layout.elementSize);
         Assert.Equal((uint)Target.PointerSize, layout.countOffset);
-        Assert.Equal(sizeof(uint), layout.rankSize);
+        Assert.Equal((uint)sizeof(uint), layout.rankSize);
         Assert.Equal(rank, layout.numRanks);
         Assert.Equal((uint)Target.PointerSize, layout.rankOffset);
     }
@@ -114,7 +114,7 @@ public class DacDbiObjectDumpTests : DumpTestBase
         Assert.Equal((uint)Target.PointerSize + sizeof(uint), layout.firstElementOffset);
         Assert.Equal((uint)sizeof(char), layout.elementSize);
         Assert.Equal((uint)Target.PointerSize, layout.countOffset);
-        Assert.Equal(sizeof(uint), layout.rankSize);
+        Assert.Equal((uint)sizeof(uint), layout.rankSize);
         Assert.Equal(1u, layout.numRanks);
         Assert.Equal((uint)Target.PointerSize, layout.rankOffset);
     }
