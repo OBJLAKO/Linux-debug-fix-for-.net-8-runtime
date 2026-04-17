@@ -114,6 +114,7 @@ public:
 };
 typedef DPTR(RuntimeInstance) PTR_RuntimeInstance;
 
+
 PTR_RuntimeInstance GetRuntimeInstance();
 
 #endif // __RuntimeInstance_h__
