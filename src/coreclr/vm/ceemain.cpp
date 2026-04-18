@@ -1116,8 +1116,8 @@ HRESULT EEStartup()
     PAL_TRY(PVOID, p, NULL)
     {
         InitializeClrNotifications();
-#ifdef TARGET_UNIX
         InitializeJITNotificationTable();
+#ifdef TARGET_UNIX
         DacGlobals::Initialize();
 #endif
 

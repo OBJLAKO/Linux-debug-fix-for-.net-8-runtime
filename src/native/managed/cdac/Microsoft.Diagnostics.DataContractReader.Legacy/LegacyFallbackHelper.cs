@@ -37,6 +37,11 @@ internal static class LegacyFallbackHelper
 
         // IXCLRDataMethodDefinition — SetCodeNotification not yet implemented (needs INotifications contract).
         nameof(IXCLRDataMethodDefinition.SetCodeNotification),
+
+        // IXCLRDataMethodDefinition — not yet implemented in the cDAC.
+        nameof(IXCLRDataMethodDefinition.StartEnumInstances),
+        nameof(IXCLRDataMethodDefinition.GetName),
+        nameof(IXCLRDataMethodDefinition.HasClassOrMethodInstantiation),
     };
 
     // Files whose methods are all allowed to fall back.
