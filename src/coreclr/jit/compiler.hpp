@@ -5631,10 +5631,9 @@ Compiler::AssertVisit Compiler::optVisitReachingAssertions(ValueNum vn, TAssertV
         // gtVNPair consumers that does not apply here, since we hand the VN to the visitor
         // together with this edge's assertion set and never write it back into any tree).
         // Fall back to the SSA def's VN, which by SSA construction names the same value.
-        LclSsaVarDsc* phiArgSsaDef = lvaGetDesc(phiArg)->GetPerSsaData(phiArg->GetSsaNum());
-        ValueNum      phiArgVN     = vnStore->VNConservativeNormalValue(phiArgSsaDef->m_vnPair);
-
-        ASSERT_TP assertions = optGetEdgeAssertions(ssaDef->GetBlock(), phiArg->gtPredBB);
+        LclSsaVarDsc*  phiArgSsaDef = lvaGetDesc(phiArg)->GetPerSsaData(phiArg->GetSsaNum());
+        const ValueNum phiArgVN     = vnStore->VNConservativeNormalValue(phiArgSsaDef->m_vnPair);
+        ASSERT_TP      assertions   = optGetEdgeAssertions(ssaDef->GetBlock(), phiArg->gtPredBB);
         if (argVisitor(phiArgVN, assertions) == AssertVisit::Abort)
         {
             // The visitor wants to abort the walk.
