@@ -686,7 +686,7 @@ public sealed unsafe partial class SOSDacImpl : IXCLRDataProcess, IXCLRDataProce
         int hr = HResults.S_OK;
         try
         {
-            if (!IsValidMethodCodeNotification(flags))
+            if (!CodeNotificationFlagsConverter.IsValid(flags))
                 throw new ArgumentException("Invalid code notification flags");
 
             TargetPointer moduleAddr = TargetPointer.Null;
@@ -697,7 +697,7 @@ public sealed unsafe partial class SOSDacImpl : IXCLRDataProcess, IXCLRDataProce
                 moduleAddr = cdm.Address;
             }
 
-            _target.Contracts.CodeNotifications.SetAllCodeNotifications(moduleAddr, (CodeNotificationKind)flags);
+            _target.Contracts.CodeNotifications.SetAllCodeNotifications(moduleAddr, CodeNotificationFlagsConverter.FromCom(flags));
         }
         catch (System.Exception ex)
         {
@@ -758,7 +758,7 @@ public sealed unsafe partial class SOSDacImpl : IXCLRDataProcess, IXCLRDataProce
                     moduleAddr = GetModuleAddress(mods[i]);
                 }
 
-                flags[i] = (uint)_target.Contracts.CodeNotifications.GetCodeNotification(moduleAddr, tokens[i]);
+                flags[i] = CodeNotificationFlagsConverter.ToCom(_target.Contracts.CodeNotifications.GetCodeNotification(moduleAddr, tokens[i]));
             }
         }
         catch (System.Exception ex)
@@ -793,11 +793,11 @@ public sealed unsafe partial class SOSDacImpl : IXCLRDataProcess, IXCLRDataProce
             {
                 for (uint check = 0; check < numTokens; check++)
                 {
-                    if (!IsValidMethodCodeNotification(flags[check]))
+                    if (!CodeNotificationFlagsConverter.IsValid(flags[check]))
                         throw new ArgumentException("Invalid code notification flags");
                 }
             }
-            else if (!IsValidMethodCodeNotification(singleFlags))
+            else if (!CodeNotificationFlagsConverter.IsValid(singleFlags))
             {
                 throw new ArgumentException("Invalid code notification flags");
             }
@@ -825,7 +825,7 @@ public sealed unsafe partial class SOSDacImpl : IXCLRDataProcess, IXCLRDataProce
                 }
 
                 uint f = flags is not null ? flags[i] : singleFlags;
-                _target.Contracts.CodeNotifications.SetCodeNotification(moduleAddr, tokens[i], (CodeNotificationKind)f);
+                _target.Contracts.CodeNotifications.SetCodeNotification(moduleAddr, tokens[i], CodeNotificationFlagsConverter.FromCom(f));
             }
         }
         catch (System.Exception ex)
@@ -993,12 +993,5 @@ public sealed unsafe partial class SOSDacImpl : IXCLRDataProcess, IXCLRDataProce
                 return cdm.Address;
         }
         throw new ArgumentException("Could not resolve module address from COM pointer");
-    }
-
-    private static bool IsValidMethodCodeNotification(uint flags)
-    {
-        const uint all = (uint)(CLRDataMethodCodeNotification.CLRDATA_METHNOTIFY_GENERATED
-                              | CLRDataMethodCodeNotification.CLRDATA_METHNOTIFY_DISCARDED);
-        return (flags & ~all) == 0;
     }
 }
