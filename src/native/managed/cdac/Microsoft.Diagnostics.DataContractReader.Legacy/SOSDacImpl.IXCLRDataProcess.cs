@@ -686,6 +686,9 @@ public sealed unsafe partial class SOSDacImpl : IXCLRDataProcess, IXCLRDataProce
         int hr = HResults.S_OK;
         try
         {
+            if (!IsValidMethodCodeNotification(flags))
+                throw new ArgumentException("Invalid code notification flags");
+
             TargetPointer moduleAddr = TargetPointer.Null;
             if (mod is not null)
             {
@@ -694,15 +697,7 @@ public sealed unsafe partial class SOSDacImpl : IXCLRDataProcess, IXCLRDataProce
                 moduleAddr = cdm.Address;
             }
 
-            _target.Contracts.CodeNotifications.SetAllCodeNotifications(moduleAddr, flags);
-        }
-        catch (System.ArgumentException)
-        {
-            hr = HResults.E_INVALIDARG;
-        }
-        catch (System.InvalidOperationException)
-        {
-            hr = HResults.E_OUTOFMEMORY;
+            _target.Contracts.CodeNotifications.SetAllCodeNotifications(moduleAddr, (CodeNotificationKind)flags);
         }
         catch (System.Exception ex)
         {
@@ -763,20 +758,8 @@ public sealed unsafe partial class SOSDacImpl : IXCLRDataProcess, IXCLRDataProce
                     moduleAddr = GetModuleAddress(mods[i]);
                 }
 
-                flags[i] = _target.Contracts.CodeNotifications.GetCodeNotification(moduleAddr, tokens[i]);
+                flags[i] = (uint)_target.Contracts.CodeNotifications.GetCodeNotification(moduleAddr, tokens[i]);
             }
-        }
-        catch (System.InvalidOperationException)
-        {
-            hr = HResults.E_OUTOFMEMORY;
-        }
-        catch (System.ArgumentNullException)
-        {
-            hr = HResults.E_INVALIDARG;
-        }
-        catch (System.ArgumentException)
-        {
-            hr = HResults.E_INVALIDARG;
         }
         catch (System.Exception ex)
         {
@@ -842,16 +825,8 @@ public sealed unsafe partial class SOSDacImpl : IXCLRDataProcess, IXCLRDataProce
                 }
 
                 uint f = flags is not null ? flags[i] : singleFlags;
-                _target.Contracts.CodeNotifications.SetCodeNotification(moduleAddr, tokens[i], f);
+                _target.Contracts.CodeNotifications.SetCodeNotification(moduleAddr, tokens[i], (CodeNotificationKind)f);
             }
-        }
-        catch (System.ArgumentException)
-        {
-            hr = HResults.E_INVALIDARG;
-        }
-        catch (System.InvalidOperationException)
-        {
-            hr = HResults.E_OUTOFMEMORY;
         }
         catch (System.Exception ex)
         {
@@ -1017,14 +992,13 @@ public sealed unsafe partial class SOSDacImpl : IXCLRDataProcess, IXCLRDataProce
             if (obj is ClrDataModule cdm)
                 return cdm.Address;
         }
-        throw new InvalidOperationException("Could not resolve module address from COM pointer");
+        throw new ArgumentException("Could not resolve module address from COM pointer");
     }
-
-    private const uint CLRDATA_METHNOTIFY_GENERATED = 1;
-    private const uint CLRDATA_METHNOTIFY_DISCARDED = 2;
 
     private static bool IsValidMethodCodeNotification(uint flags)
     {
-        return (flags & ~(CLRDATA_METHNOTIFY_GENERATED | CLRDATA_METHNOTIFY_DISCARDED)) == 0;
+        const uint all = (uint)(CLRDataMethodCodeNotification.CLRDATA_METHNOTIFY_GENERATED
+                              | CLRDataMethodCodeNotification.CLRDATA_METHNOTIFY_DISCARDED);
+        return (flags & ~all) == 0;
     }
 }
