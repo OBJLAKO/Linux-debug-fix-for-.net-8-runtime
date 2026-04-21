@@ -4863,7 +4863,70 @@ public sealed unsafe partial class SOSDacImpl
         return hr;
     }
     int ISOSDacInterface.TraverseVirtCallStubHeap(ClrDataAddress pAppDomain, int heaptype, void* pCallback)
-        => LegacyFallbackHelper.CanFallback() && _legacyImpl is not null ? _legacyImpl.TraverseVirtCallStubHeap(pAppDomain, heaptype, pCallback) : HResults.E_NOTIMPL;
+    {
+        int hr = HResults.S_OK;
+#if DEBUG
+        DebugTraverseLoaderHeapBlocks.Clear();
+        _debugTraverseLoaderDebugCount = 0;
+#endif
+        try
+        {
+            if (pAppDomain == 0 || pCallback is null)
+                throw new ArgumentException();
+
+            const int IndcellHeap = 0;
+            const int CacheEntryHeap = 4;
+
+            Contracts.ILoader loader = _target.Contracts.Loader;
+            TargetPointer globalLoaderAllocator = loader.GetGlobalLoaderAllocator();
+            IReadOnlyDictionary<string, TargetPointer> heaps = loader.GetLoaderAllocatorHeaps(globalLoaderAllocator);
+
+            // VirtualCallStubManager is required for this API. In the Loader_1 contract,
+            // the presence of the IndcellHeap entry indicates the manager exists.
+            if (!heaps.ContainsKey("IndcellHeap"))
+                throw new NullReferenceException();
+
+            string? heapName = heaptype switch
+            {
+                IndcellHeap => "IndcellHeap",
+                CacheEntryHeap => "CacheEntryHeap",
+                _ => null,
+            };
+
+            if (heapName is null)
+                throw new ArgumentException();
+
+            // CacheEntryHeap may not exist on runtimes where FEATURE_VIRTUAL_STUB_DISPATCH
+            // is disabled; native DAC returns S_OK with no callback in that case.
+            if (heaps.TryGetValue(heapName, out TargetPointer heap) && heap != TargetPointer.Null)
+            {
+                delegate* unmanaged<ulong, nuint, Interop.BOOL, void> callback = (delegate* unmanaged<ulong, nuint, Interop.BOOL, void>)pCallback;
+                hr = TraverseLoaderHeapCore(heap.ToClrDataAddress(_target), callback);
+            }
+        }
+        catch (System.Exception ex)
+        {
+            hr = ex.HResult;
+        }
+
+#if DEBUG
+        if (_legacyImpl is not null)
+        {
+            int cdacCount = DebugTraverseLoaderHeapBlocks.Count;
+            delegate* unmanaged<ulong, nuint, Interop.BOOL, void> debugCallbackPtr = &TraverseLoaderHeapDebugCallback;
+            int hrLocal = _legacyImpl.TraverseVirtCallStubHeap(pAppDomain, heaptype, (void*)debugCallbackPtr);
+            Debug.ValidateHResult(hr, hrLocal);
+            if (hr == HResults.S_OK || hr == HResults.S_FALSE)
+            {
+                Debug.Assert(DebugTraverseLoaderHeapBlocks.Count == 0,
+                    $"cDAC found {cdacCount} blocks, DAC matched {_debugTraverseLoaderDebugCount}, {DebugTraverseLoaderHeapBlocks.Count} unmatched");
+                Debug.Assert(_debugTraverseLoaderDebugCount == (uint)cdacCount,
+                    $"cDAC: {cdacCount} blocks, DAC: {_debugTraverseLoaderDebugCount} blocks");
+            }
+        }
+#endif
+        return hr;
+    }
 #endregion ISOSDacInterface
 
     #region ISOSDacInterface2
