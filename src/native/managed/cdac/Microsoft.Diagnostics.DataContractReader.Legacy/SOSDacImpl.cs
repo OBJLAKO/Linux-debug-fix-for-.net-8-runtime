@@ -4881,10 +4881,8 @@ public sealed unsafe partial class SOSDacImpl
             TargetPointer globalLoaderAllocator = loader.GetGlobalLoaderAllocator();
             IReadOnlyDictionary<string, TargetPointer> heaps = loader.GetLoaderAllocatorHeaps(globalLoaderAllocator);
 
-            // VirtualCallStubManager is required for this API. In the Loader_1 contract,
-            // the presence of the IndcellHeap entry indicates the manager exists.
             if (!heaps.ContainsKey("IndcellHeap"))
-                throw new NullReferenceException();
+                throw new COMException("VirtualCallStubManager is not available.", HResults.E_POINTER);
 
             string? heapName = heaptype switch
             {

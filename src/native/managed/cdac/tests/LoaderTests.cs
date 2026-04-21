@@ -169,9 +169,10 @@ public unsafe class LoaderTests
 
     private const int VCSHeapTypeIndcell = 0;
     private const int VCSHeapTypeCacheEntry = 4;
+    private const int InvalidVCSHeapType = 1;
 
     [UnmanagedCallersOnly]
-    private static void VisitHeapNoOp(ulong _1, nuint _2, Interop.BOOL _3)
+    private static void VisitHeapNoOp(ulong address, nuint size, Interop.BOOL isCurrent)
     {
     }
 
@@ -306,14 +307,14 @@ public unsafe class LoaderTests
             });
 
         delegate* unmanaged<ulong, nuint, Interop.BOOL, void> callback = &VisitHeapNoOp;
-        int hr = impl.TraverseVirtCallStubHeap(new ClrDataAddress(0x1), heaptype: 1, (void*)callback);
+        int hr = impl.TraverseVirtCallStubHeap(new ClrDataAddress(0x1), InvalidVCSHeapType, (void*)callback);
 
         Assert.Equal(HResults.E_INVALIDARG, hr);
     }
 
     [Theory]
     [ClassData(typeof(MockTarget.StdArch))]
-    public void TraverseVirtCallStubHeap_InvalidArguments_ReturnEInvalidArg(MockTarget.Architecture arch)
+    public void TraverseVirtCallStubHeap_InvalidArguments_ReturnsEInvalidArg(MockTarget.Architecture arch)
     {
         (ISOSDacInterface impl, Mock<ILoader> loader) = CreateSOSDacInterfaceForVirtCallHeapTests(arch);
 
