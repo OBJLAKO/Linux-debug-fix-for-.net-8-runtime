@@ -20,58 +20,61 @@ internal readonly struct CodeNotifications_1 : ICodeNotifications
         if (view is null)
             return;
 
+        TableView v = view.Value;
+
         if (flags == CodeNotificationKind.None)
         {
-            if (TryFindEntry(view.Value, module, methodToken, out uint foundIndex))
+            if (v.TryFindEntry(module, methodToken, out uint foundIndex))
             {
-                Data.JITNotification entry = GetEntry(view.Value, foundIndex);
+                Data.JITNotification entry = v.GetEntry(foundIndex);
                 entry.Clear();
-                if (foundIndex == view.Value.Length - 1)
+                if (foundIndex == v.Length - 1)
                 {
-                    view.Value.Bookkeeping.MethodToken = view.Value.Length - 1;
+                    v.Length--;
                 }
             }
 
             return;
         }
 
-        if (TryFindEntry(view.Value, module, methodToken, out uint existingIndex))
+        if (v.TryFindEntry(module, methodToken, out uint existingIndex))
         {
-            Data.JITNotification entry = GetEntry(view.Value, existingIndex);
-            entry.State = (ushort)flags;
+            v.GetEntry(existingIndex).State = (ushort)flags;
 
             return;
         }
 
-        uint firstFree = view.Value.Length;
-        for (uint i = 0; i < view.Value.Length; i++)
+        uint firstFree = v.Length;
+        for (uint i = 0; i < v.Length; i++)
         {
-            if (GetEntry(view.Value, i).IsFree)
+            if (v.GetEntry(i).IsFree)
             {
                 firstFree = i;
                 break;
             }
         }
 
-        if (firstFree >= view.Value.Capacity)
+        if (firstFree >= v.Capacity)
             throw new InvalidOperationException("JIT notification table is full");
 
-        GetEntry(view.Value, firstFree).WriteEntry(module, methodToken, (ushort)flags);
+        v.GetEntry(firstFree).WriteEntry(module, methodToken, (ushort)flags);
 
-        if (firstFree >= view.Value.Length)
+        if (firstFree >= v.Length)
         {
-            view.Value.Bookkeeping.MethodToken = view.Value.Length + 1;
+            v.Length++;
         }
     }
 
     CodeNotificationKind ICodeNotifications.GetCodeNotification(TargetPointer module, uint methodToken)
     {
-        TableView view = PrepareTable(allocateIfMissing: false)
-            ?? throw new InvalidOperationException("JIT notification table not allocated");
+        TableView? view = PrepareTable(allocateIfMissing: false);
+        if (view is null)
+            return CodeNotificationKind.None;
 
-        if (TryFindEntry(view, module, methodToken, out uint foundIndex))
+        TableView v = view.Value;
+        if (v.TryFindEntry(module, methodToken, out uint foundIndex))
         {
-            return (CodeNotificationKind)GetEntry(view, foundIndex).State;
+            return (CodeNotificationKind)v.GetEntry(foundIndex).State;
         }
 
         return CodeNotificationKind.None;
@@ -79,15 +82,17 @@ internal readonly struct CodeNotifications_1 : ICodeNotifications
 
     void ICodeNotifications.SetAllCodeNotifications(TargetPointer module, CodeNotificationKind flags)
     {
+        // When the table has not been allocated there are no entries to update, so this is a
+        // no-op. Matches native JITNotifications::SetAllNotifications (util.cpp:1112).
         TableView? maybeView = PrepareTable(allocateIfMissing: false);
         if (maybeView is null)
             return;
 
-        TableView view = maybeView.Value;
+        TableView v = maybeView.Value;
         bool changed = false;
-        for (uint i = 0; i < view.Length; i++)
+        for (uint i = 0; i < v.Length; i++)
         {
-            Data.JITNotification entry = GetEntry(view, i);
+            Data.JITNotification entry = v.GetEntry(i);
             if (entry.IsFree)
                 continue;
 
@@ -108,13 +113,13 @@ internal readonly struct CodeNotifications_1 : ICodeNotifications
 
         if (changed && flags == CodeNotificationKind.None)
         {
-            uint newLength = view.Length;
-            while (newLength > 0 && GetEntry(view, newLength - 1).IsFree)
+            uint newLength = v.Length;
+            while (newLength > 0 && v.GetEntry(newLength - 1).IsFree)
             {
                 newLength--;
             }
 
-            view.Bookkeeping.MethodToken = newLength;
+            v.Length = newLength;
         }
     }
 
@@ -124,25 +129,60 @@ internal readonly struct CodeNotifications_1 : ICodeNotifications
     }
 
     /// <summary>
-    /// Snapshot of the prepared JIT notification table: the bookkeeping slot, the base
-    /// address of the entry array, the current length and total capacity, and the entry
-    /// stride. Produced by <see cref="PrepareTable"/>.
+    /// A live handle to the JIT notification table in the target process.
+    /// <see cref="Length"/> reads and writes through to the bookkeeping slot; <see cref="Capacity"/>
+    /// comes from the <c>JITNotificationTableSize</c> global. Per-entry access is via
+    /// <see cref="GetEntry"/> and <see cref="TryFindEntry"/>.
     /// </summary>
     private readonly struct TableView
     {
-        public readonly Data.JITNotification Bookkeeping;
+        private readonly Target _target;
+        private readonly Target.TypeInfo _type;
+        private readonly TargetPointer _base;
         public readonly ulong EntriesBase;
         public readonly uint EntrySize;
-        public readonly uint Length;
-        public readonly uint Capacity;
 
-        public TableView(Data.JITNotification bookkeeping, ulong entriesBase, uint entrySize, uint length, uint capacity)
+        public TableView(Target target, Target.TypeInfo type, TargetPointer basePointer, uint entrySize)
         {
-            Bookkeeping = bookkeeping;
-            EntriesBase = entriesBase;
+            _target = target;
+            _type = type;
+            _base = basePointer;
             EntrySize = entrySize;
-            Length = length;
-            Capacity = capacity;
+            EntriesBase = basePointer + entrySize;
+        }
+
+        public uint Length
+        {
+            get => _target.ReadField<uint>(_base.Value, _type, nameof(Data.JITNotification.MethodToken));
+            set => _target.WriteField(_base.Value, _type, nameof(Data.JITNotification.MethodToken), value);
+        }
+
+        public uint Capacity => _target.ReadGlobal<uint>(Constants.Globals.JITNotificationTableSize);
+
+        public Data.JITNotification GetEntry(uint index)
+            => new(_target, new TargetPointer(EntriesBase + (ulong)(index * EntrySize)));
+
+        public bool TryFindEntry(TargetPointer module, uint methodToken, out uint index)
+        {
+            uint length = Length;
+            for (uint i = 0; i < length; i++)
+            {
+                Data.JITNotification entry = GetEntry(i);
+                if (entry.IsFree)
+                    continue;
+                if (entry.ClrModule.Value != module.Value)
+                    continue;
+                if (entry.MethodToken != methodToken)
+                    continue;
+
+                index = i;
+
+                return true;
+            }
+
+            index = 0;
+
+            return false;
         }
     }
 
@@ -152,69 +192,29 @@ internal readonly struct CodeNotifications_1 : ICodeNotifications
     /// </summary>
     private TableView? PrepareTable(bool allocateIfMissing)
     {
-        uint entrySize = GetEntrySize();
-        TargetPointer tablePointer = ReadTablePointer();
+        Target.TypeInfo jitNotifType = _target.GetTypeInfo(DataType.JITNotification);
+        uint entrySize = (uint)(jitNotifType.Size
+            ?? throw new InvalidOperationException("JITNotification has no declared size"));
+
+        TargetPointer globalAddr = _target.ReadGlobalPointer(Constants.Globals.JITNotificationTable);
+        TargetPointer tablePointer = _target.ReadPointer(globalAddr);
 
         if (tablePointer == TargetPointer.Null)
         {
             if (!allocateIfMissing)
                 return null;
-            tablePointer = AllocateTable(entrySize);
+            tablePointer = AllocateTable(entrySize, globalAddr);
         }
 
-        Data.JITNotification bookkeeping = new(_target, tablePointer);
-        uint length = bookkeeping.MethodToken;
-        uint capacity = _target.ReadGlobal<uint>(Constants.Globals.JITNotificationTableSize);
-        ulong entriesBase = tablePointer + entrySize;
-
-        return new TableView(bookkeeping, entriesBase, entrySize, length, capacity);
-    }
-
-    private Data.JITNotification GetEntry(TableView view, uint index)
-        => new(_target, new TargetPointer(view.EntriesBase + (ulong)(index * view.EntrySize)));
-
-    private bool TryFindEntry(TableView view, TargetPointer module, uint methodToken, out uint index)
-    {
-        for (uint i = 0; i < view.Length; i++)
-        {
-            Data.JITNotification entry = GetEntry(view, i);
-            if (entry.IsFree)
-                continue;
-
-            if (entry.ClrModule.Value != module.Value)
-                continue;
-
-            if (entry.MethodToken != methodToken)
-                continue;
-
-            index = i;
-
-            return true;
-        }
-
-        index = 0;
-
-        return false;
-    }
-
-    private uint GetEntrySize()
-    {
-        Target.TypeInfo jitNotifType = _target.GetTypeInfo(DataType.JITNotification);
-        return (uint)jitNotifType.Size!.Value;
-    }
-
-    private TargetPointer ReadTablePointer()
-    {
-        return _target.ReadPointer(
-            _target.ReadGlobalPointer(Constants.Globals.JITNotificationTable));
+        return new TableView(_target, jitNotifType, tablePointer, entrySize);
     }
 
     /// <summary>
     /// Lazily allocate a JIT notification table in the target process using AllocateMemory,
     /// zero-fill it (slot 0's methodToken is the length, which starts at 0), and write the
-    /// pointer back to g_pNotificationTable.
+    /// pointer back to <c>g_pNotificationTable</c>.
     /// </summary>
-    private TargetPointer AllocateTable(uint entrySize)
+    private TargetPointer AllocateTable(uint entrySize, TargetPointer globalAddr)
     {
         uint capacity = _target.ReadGlobal<uint>(Constants.Globals.JITNotificationTableSize);
         // Table has capacity+1 entries: index 0 is bookkeeping
@@ -224,11 +224,7 @@ internal readonly struct CodeNotifications_1 : ICodeNotifications
         byte[] zeros = new byte[tableByteSize];
         _target.WriteBuffer(tablePointer.Value, zeros);
 
-        TargetPointer globalAddr = _target.ReadGlobalPointer(Constants.Globals.JITNotificationTable);
-        if (_target.PointerSize == 8)
-            _target.Write<ulong>(globalAddr.Value, tablePointer.Value);
-        else
-            _target.Write<uint>(globalAddr.Value, (uint)tablePointer.Value);
+        _target.WritePointer(globalAddr.Value, tablePointer);
 
         return tablePointer;
     }

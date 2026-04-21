@@ -203,6 +203,13 @@ public abstract class Target
     public abstract void Write<T>(ulong address, T value) where T : unmanaged, IBinaryInteger<T>, IMinMaxValue<T>;
 
     /// <summary>
+    /// Write a target pointer to the target in target endianness, using the target's pointer size.
+    /// </summary>
+    /// <param name="address">Address to write to</param>
+    /// <param name="value">Pointer value to write</param>
+    public abstract void WritePointer(ulong address, TargetPointer value);
+
+    /// <summary>
     /// Read a target pointer from a span of bytes
     /// </summary>
     /// <param name="bytes">The span of bytes to read from</param>

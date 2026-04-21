@@ -369,6 +369,14 @@ internal class TestPlaceholderTarget : Target
         WriteBuffer(address, buffer);
     }
 
+    public override void WritePointer(ulong address, TargetPointer value)
+    {
+        if (PointerSize == 8)
+            Write<ulong>(address, value.Value);
+        else
+            Write<uint>(address, checked((uint)value.Value));
+    }
+
     #region subclass reader helpers
 
     /// <summary>

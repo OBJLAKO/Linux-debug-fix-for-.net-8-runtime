@@ -498,6 +498,14 @@ public sealed unsafe class ContractDescriptorTarget : Target
             throw new InvalidOperationException($"Failed to write {typeof(T)} at 0x{address:x8}.");
     }
 
+    public override void WritePointer(ulong address, TargetPointer value)
+    {
+        if (_config.PointerSize == 8)
+            Write<ulong>(address, value.Value);
+        else
+            Write<uint>(address, checked((uint)value.Value));
+    }
+
     private static bool TryWrite<T>(ulong address, bool isLittleEndian, DataTargetDelegates dataTargetDelegates, T value) where T : unmanaged, IBinaryInteger<T>, IMinMaxValue<T>
     {
         Span<byte> buffer = stackalloc byte[sizeof(T)];
