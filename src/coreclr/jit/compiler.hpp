@@ -5648,18 +5648,14 @@ Compiler::AssertVisit Compiler::optVisitReachingAssertionsWorker(ValueNum       
             return AssertVisit::Abort;
         }
 
-        ValueNum phiArgVN = vnStore->VNConservativeNormalValue(phiArg->gtVNPair);
-        if (phiArgVN == ValueNumStore::NoVN)
-        {
-            // fgValueNumberPhiDef may leave gtVNPair as NoVN when it refuses to back-patch
-            // a loop-varying SSA-def VN into the phi-arg slot (a hygiene constraint for general
-            // gtVNPair consumers that does not apply here, since we hand the VN to the visitor
-            // together with this edge's assertion set and never write it back into any tree).
-            // Fall back to the SSA def's VN, which by SSA construction names the same value.
-            LclSsaVarDsc* phiArgSsaDef = lvaGetDesc(phiArg)->GetPerSsaData(phiArg->GetSsaNum());
-            phiArgVN                   = vnStore->VNConservativeNormalValue(phiArgSsaDef->m_vnPair);
-        }
-        ASSERT_TP assertions = optGetEdgeAssertions(ssaDef->GetBlock(), phiArg->gtPredBB);
+        // fgValueNumberPhiDef may leave gtVNPair as NoVN when it refuses to back-patch
+        // a loop-varying SSA-def VN into the phi-arg slot (a hygiene constraint for general
+        // gtVNPair consumers that does not apply here, since we hand the VN to the visitor
+        // together with this edge's assertion set and never write it back into any tree).
+        // Use the SSA def's VN directly; by SSA construction it names the same value.
+        LclSsaVarDsc*  phiArgSsaDef = lvaGetDesc(phiArg)->GetPerSsaData(phiArg->GetSsaNum());
+        const ValueNum phiArgVN     = vnStore->VNConservativeNormalValue(phiArgSsaDef->m_vnPair);
+        ASSERT_TP      assertions   = optGetEdgeAssertions(ssaDef->GetBlock(), phiArg->gtPredBB);
         if (argVisitor(phiArgVN, assertions) == AssertVisit::Abort)
         {
             // The visitor wants to abort the walk.
