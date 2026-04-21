@@ -654,7 +654,8 @@ void RangeCheck::MergeEdgeAssertions(GenTreeLclVarCommon* lcl, ASSERT_VALARG_TP 
 // Return Value:
 //    The computed range
 //
-Range RangeCheck::GetRangeFromAssertions(Compiler* comp, ValueNum num, ASSERT_VALARG_TP assertions, int budget)
+Range RangeCheck::GetRangeFromAssertions(
+    Compiler* comp, ValueNum num, ASSERT_VALARG_TP assertions, int budget, ValueNumStore::SmallValueNumSet* visitedPhis)
 {
     // Start with the widest possible constant range.
     Range result = Range(Limit(Limit::keConstant, INT32_MIN), Limit(Limit::keConstant, INT32_MAX));
@@ -699,7 +700,8 @@ Range RangeCheck::GetRangeFromAssertions(Compiler* comp, ValueNum num, ASSERT_VA
                     // if its range is within the castTo range, we can use that (and the cast is basically a no-op).
                     if (comp->vnStore->TypeOfVN(funcApp.m_args[0]) == TYP_INT)
                     {
-                        Range castOpRange = GetRangeFromAssertions(comp, funcApp.m_args[0], assertions, --budget);
+                        Range castOpRange =
+                            GetRangeFromAssertions(comp, funcApp.m_args[0], assertions, --budget, visitedPhis);
                         if (castOpRange.IsConstantRange() &&
                             (castOpRange.LowerLimit().GetConstant() >= castToTypeRange.LowerLimit().GetConstant()) &&
                             (castOpRange.UpperLimit().GetConstant() <= castToTypeRange.UpperLimit().GetConstant()))
@@ -713,7 +715,7 @@ Range RangeCheck::GetRangeFromAssertions(Compiler* comp, ValueNum num, ASSERT_VA
 
             case VNF_NEG:
             {
-                Range r1            = GetRangeFromAssertions(comp, funcApp.m_args[0], assertions, --budget);
+                Range r1 = GetRangeFromAssertions(comp, funcApp.m_args[0], assertions, --budget, visitedPhis);
                 Range unaryOpResult = RangeOps::Negate(r1);
 
                 // We can use the result only if it never overflows.
@@ -732,8 +734,8 @@ Range RangeCheck::GetRangeFromAssertions(Compiler* comp, ValueNum num, ASSERT_VA
             case VNF_UMOD:
             {
                 // Get ranges of both operands and perform the same operation on the ranges.
-                Range r1          = GetRangeFromAssertions(comp, funcApp.m_args[0], assertions, --budget);
-                Range r2          = GetRangeFromAssertions(comp, funcApp.m_args[1], assertions, --budget);
+                Range r1          = GetRangeFromAssertions(comp, funcApp.m_args[0], assertions, --budget, visitedPhis);
+                Range r2          = GetRangeFromAssertions(comp, funcApp.m_args[1], assertions, --budget, visitedPhis);
                 Range binOpResult = Range(Limit(Limit::keUnknown));
                 switch (funcApp.m_func)
                 {
@@ -799,8 +801,8 @@ Range RangeCheck::GetRangeFromAssertions(Compiler* comp, ValueNum num, ASSERT_VA
                 if ((genActualType(comp->vnStore->TypeOfVN(funcApp.m_args[0])) == TYP_INT) &&
                     (genActualType(comp->vnStore->TypeOfVN(funcApp.m_args[1])) == TYP_INT))
                 {
-                    Range r1 = GetRangeFromAssertions(comp, funcApp.m_args[0], assertions, --budget);
-                    Range r2 = GetRangeFromAssertions(comp, funcApp.m_args[1], assertions, --budget);
+                    Range r1 = GetRangeFromAssertions(comp, funcApp.m_args[0], assertions, --budget, visitedPhis);
+                    Range r2 = GetRangeFromAssertions(comp, funcApp.m_args[1], assertions, --budget, visitedPhis);
 
                     bool       isUnsigned = true;
                     genTreeOps cmpOper;
@@ -845,10 +847,19 @@ Range RangeCheck::GetRangeFromAssertions(Compiler* comp, ValueNum num, ASSERT_VA
         return result;
     }
 
+    // Top-level entry: allocate the visited-phi set on the stack. Recursive entries (made
+    // by the visitor below through GetRangeFromAssertions) thread the existing set forward
+    // so cycles through loop-carried PHIs are detected.
+    ValueNumStore::SmallValueNumSet localVisited;
+    if (visitedPhis == nullptr)
+    {
+        visitedPhis = &localVisited;
+    }
+
     Range phiRange = Range(Limit(Limit::keUndef));
-    auto  visitor  = [comp, &phiRange, &budget](ValueNum reachingVN, ASSERT_TP reachingAssertions) {
+    auto  visitor  = [comp, &phiRange, &budget, visitedPhis](ValueNum reachingVN, ASSERT_TP reachingAssertions) {
         // call GetRangeFromAssertions for each reaching VN using reachingAssertions
-        Range edgeRange = GetRangeFromAssertions(comp, reachingVN, reachingAssertions, min(3, --budget));
+        Range edgeRange = GetRangeFromAssertions(comp, reachingVN, reachingAssertions, --budget, visitedPhis);
 
         // If phiRange is not yet set, set it to the first edgeRange
         // else merge it with the new edgeRange. Example: [10..100] U [50..150] = [10..150]
@@ -864,7 +875,8 @@ Range RangeCheck::GetRangeFromAssertions(Compiler* comp, ValueNum num, ASSERT_VA
         return Compiler::AssertVisit::Abort;
     };
 
-    if (comp->optVisitReachingAssertions(num, visitor) == Compiler::AssertVisit::Continue && !phiRange.IsUndef())
+    if (comp->optVisitReachingAssertionsWorker(num, visitor, *visitedPhis) == Compiler::AssertVisit::Continue &&
+        !phiRange.IsUndef())
     {
         assert(phiRange.IsConstantRange());
         result = phiRange;

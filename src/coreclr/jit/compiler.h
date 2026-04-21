@@ -2747,6 +2747,7 @@ class Compiler
     friend class Promotion;
     friend class ReplaceVisitor;
     friend class FlowGraphNaturalLoop;
+    friend class RangeCheck;
 
 #ifdef FEATURE_HW_INTRINSICS
     friend struct GenTreeHWIntrinsic;
@@ -8799,6 +8800,14 @@ public:
 
     template <typename TAssertVisitor>
     AssertVisit optVisitReachingAssertions(ValueNum vn, TAssertVisitor argVisitor);
+
+private:
+    template <typename TAssertVisitor>
+    AssertVisit optVisitReachingAssertionsWorker(ValueNum                         vn,
+                                                 TAssertVisitor                   argVisitor,
+                                                 ValueNumStore::SmallValueNumSet& visitedPhis);
+
+public:
 
     void optAssertionProp_RangeProperties(ASSERT_VALARG_TP assertions,
                                           GenTree*         tree,

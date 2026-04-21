@@ -5582,11 +5582,33 @@ bool Compiler::optLoopComplexityExceeds(FlowGraphNaturalLoop* loop, unsigned lim
 template <typename TAssertVisitor>
 Compiler::AssertVisit Compiler::optVisitReachingAssertions(ValueNum vn, TAssertVisitor argVisitor)
 {
+    ValueNumStore::SmallValueNumSet visitedPhis;
+    return optVisitReachingAssertionsWorker(vn, argVisitor, visitedPhis);
+}
+
+//--------------------------------------------------------------------------------
+// optVisitReachingAssertionsWorker: Worker for optVisitReachingAssertions that takes
+//    an explicit visited-phi set, used to detect cycles when the visitor recursively
+//    re-enters this walk (e.g. via RangeCheck::GetRangeFromAssertions). The set is
+//    threaded across the recursion chain so we can abort on revisits of phi-def VNs
+//    that arise from loop-carried PHIs.
+//
+template <typename TAssertVisitor>
+Compiler::AssertVisit Compiler::optVisitReachingAssertionsWorker(ValueNum                         vn,
+                                                                 TAssertVisitor                   argVisitor,
+                                                                 ValueNumStore::SmallValueNumSet& visitedPhis)
+{
     VNPhiDef phiDef;
     if (!vnStore->GetPhiDef(vn, &phiDef))
     {
         // We assume that the caller already checked assertions for the current block, so we're
         // interested only in assertions for PHI definitions.
+        return AssertVisit::Abort;
+    }
+
+    if (!visitedPhis.Add(this, vn))
+    {
+        JITDUMP("... optVisitReachingAssertions: cycle detected on " FMT_VN "; aborting\n", vn);
         return AssertVisit::Abort;
     }
 
