@@ -268,7 +268,7 @@ public class CodeNotificationsTests
     public void SetCodeNotification_NullTable_NoAllocator_Throws()
     {
         ICodeNotifications contract = CreateContractWithNullTable(allocateMemory: null);
-        Assert.Throws<NotSupportedException>(() =>
+        Assert.Throws<NotImplementedException>(() =>
             contract.SetCodeNotification(new TargetPointer(0x1000), 0x0600_0001, CodeNotificationKind.Generated));
     }
 
@@ -276,7 +276,6 @@ public class CodeNotificationsTests
     public void SetCodeNotification_NullTable_LazyAllocates_ThenWorks()
     {
         var arch = new MockTarget.Architecture { IsLittleEndian = true, Is64Bit = true };
-        var helpers = new TargetTestHelpers(arch);
 
         int totalTableSize = EntrySize * ((int)TableCapacity + 1);
         byte[] allocatedTableData = new byte[totalTableSize];

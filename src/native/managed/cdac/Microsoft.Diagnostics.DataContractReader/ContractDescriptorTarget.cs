@@ -48,7 +48,7 @@ public sealed unsafe class ContractDescriptorTarget : Target
     public delegate int GetTargetThreadContextDelegate(uint threadId, uint contextFlags, Span<byte> bufferToFill);
     public delegate int AllocVirtualDelegate(ulong size, out ulong allocatedAddress);
     private static int ThrowAllocVirtual(ulong size, out ulong allocatedAddress)
-        => throw new NotSupportedException("Target does not support memory allocation");
+        => throw new NotImplementedException("Target does not support memory allocation");
     private static readonly UTF8Encoding strictUTF8Encoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
     private static readonly UTF8Encoding looseUTF8Encoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: false);
 

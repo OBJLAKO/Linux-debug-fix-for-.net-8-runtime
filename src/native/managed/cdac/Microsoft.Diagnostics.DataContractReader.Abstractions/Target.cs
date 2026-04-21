@@ -103,14 +103,14 @@ public abstract class Target
     /// </summary>
     /// <param name="size">The number of bytes to allocate</param>
     /// <returns>The address of the allocated memory in the target process</returns>
-    /// <exception cref="NotSupportedException">Thrown when the target does not support memory allocation</exception>
+    /// <exception cref="NotImplementedException">Thrown when the target does not support memory allocation</exception>
     /// <remarks>
     /// This is used for lazy allocation patterns where the debugger needs to allocate memory
     /// in the target process (e.g., JIT notification tables on Windows).
-    /// The default implementation throws <see cref="NotSupportedException"/>.
+    /// The default implementation throws <see cref="NotImplementedException"/>.
     /// </remarks>
     public virtual TargetPointer AllocateMemory(uint size)
-        => throw new NotSupportedException("Target does not support memory allocation");
+        => throw new NotImplementedException("Target does not support memory allocation");
 
     /// <summary>
     /// Read a null-terminated UTF-8 string from the target
