@@ -1,10 +1,14 @@
-# .NET Runtime
+# .NET Runtime — Linux Debug Fix (release/8.0)
 
 [![Build Status](https://dev.azure.com/dnceng-public/public/_apis/build/status/dotnet/runtime/runtime?branchName=main)](https://dev.azure.com/dnceng-public/public/_build/latest?definitionId=129&branchName=main)
 [![Help Wanted](https://img.shields.io/github/issues/dotnet/runtime/help%20wanted?style=flat-square&color=%232EA043&label=help%20wanted)](https://github.com/dotnet/runtime/labels/help%20wanted)
-[![Gitter](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/dotnet/runtime)
 [![Discord](https://img.shields.io/discord/732297728826277939?style=flat-square&label=Discord&logo=discord&logoColor=white&color=7289DA)](https://aka.ms/dotnet-discord)
 
+> **This is a fork of [dotnet/runtime](https://github.com/dotnet/runtime) with a fix for custom debugger notifications on Linux (.NET 8).**
+
+* [What is this fork?](#what-is-this-fork)
+* [The fix](#the-fix)
+* [How to build](#how-to-build)
 * [What is .NET?](#what-is-net)
 * [How can I contribute?](#how-can-i-contribute)
 * [Reporting security issues and security bugs](#reporting-security-issues-and-security-bugs)
@@ -15,6 +19,65 @@
 
 This repo contains the code to build the .NET runtime, libraries and shared host (`dotnet`) installers for
 all supported platforms, as well as the sources to .NET runtime and libraries.
+
+## What is this fork?
+
+This fork fixes a bug in the .NET 8 runtime (`release/8.0`) where **custom debugger notifications
+(`ICorDebugProcess3::SetEnableCustomNotification`) did not work correctly on Linux**.
+
+In the original implementation, the enabled/disabled state for custom notifications was stored
+client-side in `CordbClass` (right side). This caused the state to be lost across debug sessions
+and made it impossible for the runtime (left side) to filter notifications independently.
+
+This fix moves the state to the **left side** (the runtime itself) using a per-module/type hash table
+(`CustomNotificationTable`), and makes `SetEnableCustomNotification` send an IPC event to the
+runtime instead of just flipping a local flag.
+
+## The fix
+
+Changed files:
+
+| File | What changed |
+|------|-------------|
+| `src/coreclr/debug/di/process.cpp` | `SetEnableCustomNotification` now sends `DB_IPCE_SET_ENABLE_CUSTOM_NOTIFICATION` IPC event to runtime instead of setting a local flag |
+| `src/coreclr/debug/di/rsclass.cpp` | Removed `m_fCustomNotificationsEnabled` field initializer |
+| `src/coreclr/debug/di/rspriv.h` | Removed `m_fCustomNotificationsEnabled` field and `SetCustomNotifications`/`CustomNotificationsEnabled` methods from `CordbClass` |
+| `src/coreclr/debug/ee/debugger.h` | Added `TypeInModule`, `CustomNotificationSHashTraits`, `CustomNotificationTable`; declarations for `ShouldSendCustomNotification`, `UpdateCustomNotificationTable`, `m_pCustomNotificationTable` |
+| `src/coreclr/debug/ee/debugger.cpp` | Initialization of `CustomNotificationTable` in constructor; implementation of `ShouldSendCustomNotification` and `UpdateCustomNotificationTable`; new IPC event handler; filter in `SendCustomDebuggerNotification` |
+| `src/coreclr/debug/inc/dbgipcevents.h` | Added `CustomNotificationData` struct to `DebuggerIPCEvent` union |
+| `src/coreclr/debug/inc/dbgipceventtypes.h` | Added `DB_IPCE_SET_ENABLE_CUSTOM_NOTIFICATION` and `DB_IPCE_SET_ENABLE_CUSTOM_NOTIFICATION_RESULT` event types |
+| `src/coreclr/debug/shared/dbgtransportsession.cpp` | Added `DB_IPCE_SET_ENABLE_CUSTOM_NOTIFICATION` case in `GetEventSize` |
+
+## How to build
+
+### Prerequisites (Arch Linux)
+
+```bash
+sudo pacman -S clang llvm lttng-ust cmake ninja python
+```
+
+### Prerequisites (Ubuntu/Debian)
+
+```bash
+sudo apt-get install clang llvm liblttng-ust-dev cmake ninja-build python3
+```
+
+### Build CoreCLR only
+
+```bash
+./build.sh -subset clr -c Release
+```
+
+Binaries will be in `artifacts/bin/coreclr/linux.x64.Release/`.
+
+### Use your custom build with an existing .NET app
+
+```bash
+# Point your app to the custom coreclr
+export DOTNET_EnableDiagnostics=1
+export CORECLR_PATH=/path/to/this/repo/artifacts/bin/coreclr/linux.x64.Release
+dotnet run
+```
 
 ## What is .NET?
 
