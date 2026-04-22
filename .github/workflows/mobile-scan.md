@@ -155,7 +155,19 @@ Keep only failures whose job names match `ios`, `iossimulator`, `ioslike`, `tvos
 
 For each failed mobile work item, follow the helix-investigation skill: download the `/console` log (pass `-L`; redirects to `*.blob.core.windows.net`), extract the failing test FQN, the assertion/exception, the Helix machine name, and whether the same failure repeats across jobs or prior builds.
 
-Capture the earliest build where the failure first appeared (walk the last ~5 builds of definition 154 if needed).
+Capture the earliest build where the failure first appeared. Query the last ~20 builds of definition 154 to find it:
+
+```bash
+cat > /tmp/gh-aw/agent/recent-builds.sh <<'SH'
+#!/bin/bash
+set -e
+curl -sL "https://dev.azure.com/dnceng-public/public/_apis/build/builds?definitions=154&branchName=refs/heads/main&statusFilter=completed&%24top=20&api-version=7.1" \
+  | jq -r '.value[] | "\(.id)|\(.result)|\(.finishTime)"'
+SH
+bash /tmp/gh-aw/agent/recent-builds.sh | tee /tmp/gh-aw/agent/recent-builds.txt
+```
+
+**Systemic-failure short-circuit.** If >10 mobile jobs fail in the current build with the same signature, OR the last 5+ consecutive builds all failed, treat this as systemic. Skip per-work-item drill-down (one representative console log is enough) and jump to Step 5 targeting the central mobile tracking issue.
 
 ## Step 5: Deduplicate before acting
 
@@ -171,9 +183,11 @@ gh search prs    "[mobile]"                 --repo dotnet/runtime --state open -
 
 Decide:
 
-- **Matching open PR exists** → do nothing. At most, add one comment to the related tracking issue linking the PR, only if no such link is already there.
-- **Matching open tracking issue exists** → comment **only if** you bring new information the issue does not have: a new build number, a new Helix machine, a platform/arch not previously listed, or a distinct error signature. Use the short template in Step 7. If no new info, emit `noop`.
+- **Matching open PR exists** → `noop`. Add a comment to the related tracking issue linking the PR only if that link is not already present.
+- **Matching open tracking issue exists** → comment **only if** you bring new information: a build number the issue does not already cite, a new Helix machine, a platform/arch not yet listed, a new failure pattern (e.g., N consecutive failures), or a distinct error signature. Use the template in Step 7. If no new info, `noop`.
 - **No match** → proceed to Step 6.
+
+Before posting a comment, read the issue's latest ~10 comments (`gh issue view <n> --repo dotnet/runtime --comments`). If the most recent comment already cites the current build ID, `noop`.
 
 ## Step 6: Classify and act
 
@@ -201,34 +215,34 @@ Required labels on the PR/issue (pass via safeoutputs):
 - One `area-*` label matching the test's library.
 - `arch-arm64` / `arch-x64` only if the failure is architecture-specific.
 
-## Step 7: Output format (keep it short)
+## Step 7: Output format
 
-**Every PR body, issue body, and comment must include the build number** (`dev.azure.com/dnceng-public/public/_build/results?buildId=<id>`).
+**Every PR body, issue body, and comment uses the same three-paragraph template. Nothing else. No preambles, no step-by-step narration, no full console dumps.**
 
-**PR body -- exactly three short paragraphs, in this order, nothing else:**
+Always include the `runtime-extra-platforms` build number (`dev.azure.com/dnceng-public/public/_build/results?buildId=<id>`) in the Impact paragraph.
 
 ```
-**Why.** <1-3 sentences: failure class, fix class, and why this specific change is correct.>
+**Why.** <1-3 sentences: failure class + the fix (for PRs) or suspected cause (for issues/comments).>
 
-**Impact.** <1-2 sentences: affected platforms (os-*, arch), affected test FQN(s), runtime-extra-platforms build #<id>.>
+**Impact.** <1-2 sentences: affected platforms (os-*, arch), affected test FQN(s) or assembly, runtime-extra-platforms build #<id>. For systemic failures, cite the consecutive-build pattern (e.g. "last 20 builds all failed").>
 
-**Trace.** First seen in build #<earliest-id>; recurring in #<id>. Helix machine(s): <names>. Error:
+**Trace.** First seen in build #<earliest-id>; most recent #<id>. Helix machine(s): <names>. Sanitized excerpt:
 ```
-<short sanitized console excerpt, <=15 lines>
+<<=15 lines from console log or test output>
 ```
-```
-
-**Tracking-issue body -- same three paragraphs** (Why → what is failing and suspected cause; Impact → platforms + tests + build #<id>; Trace → first build, recurring builds, Helix machines, sanitized excerpt).
-
-**Comment on an existing issue -- single short paragraph**:
-```
-Recurred in runtime-extra-platforms build #<id> on <os-*> (<arch>). Helix machine(s): <names>. <one-line new signal if any>.
 ```
 
-No preambles, no "I investigated", no bullet lists of steps taken. Do not paste the full console log. Do not include the three section headings more than once.
+Hard caps:
+- Total body ≤ 40 lines.
+- Error excerpt ≤ 15 lines.
+- ≤ 5 test/assembly names in Impact; if more, use "... and N more".
+- No @mentions. No markdown tables unless reporting >1 build recurrence.
+
+The same template applies whether opening a PR, opening an issue, or commenting on an existing issue. The only difference is what goes in Why: for a comment, Why states why *this* comment adds value (what new info).
 
 ## Step 8: Submit
 
 - Emit at most one artifact per distinct failure signature.
-- If Step 5 found an existing fix PR, emit `noop` (the single comment from Step 5 is sufficient).
+- For systemic failures (Step 4 short-circuit), the single comment on the central tracking issue is the final output. Do not also open sibling issues.
+- Do not emit both `add_comment` and `noop` for the same failure.
 - If no classification fits and no issue exists, open a short tracking issue using the Step 7 template -- do not emit `noop` with "manual investigation required".
