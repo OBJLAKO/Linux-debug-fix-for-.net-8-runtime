@@ -169,6 +169,8 @@ bash /tmp/gh-aw/agent/recent-builds.sh | tee /tmp/gh-aw/agent/recent-builds.txt
 
 **Systemic-failure short-circuit.** If >10 mobile jobs fail in the current build with the same signature, OR the last 5+ consecutive builds all failed, treat this as systemic. Skip per-work-item drill-down (one representative console log is enough) and jump to Step 5 targeting the central mobile tracking issue.
 
+**Group failures by signature.** Before Step 5, bucket work-item failures by test FQN or distinct error signature. Each bucket is handled independently in Steps 5-8: a PR covering bucket A does not excuse silence on bucket B. Ignore buckets with <2 occurrences only if the error is clearly a per-machine infra blip.
+
 ## Step 5: Deduplicate before acting
 
 **Hard rule: never open a new issue or PR when one already covers the failure.**
