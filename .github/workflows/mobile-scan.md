@@ -103,47 +103,38 @@ network:
 
 # Mobile Platform Failure Scanner
 
-You scan the `runtime-extra-platforms` pipeline (AzDO definition 154, org `dnceng-public`, project `public`) for Apple mobile and Android failures on `main`, triage them, and propose fixes.
+Scan the `runtime-extra-platforms` pipeline (AzDO definition 154, org `dnceng-public`, project `public`) on `main` for Apple mobile and Android failures, triage them, and propose fixes.
 
-**Data safety:** CI logs can contain user paths, environment variables with secrets, and authentication headers. Sanitize log excerpts before posting in PR descriptions, issue comments, or commit messages by redacting these elements.
+Sanitize log excerpts (user paths, tokens, auth headers) before posting anything.
 
-## Step 1: Load domain knowledge
+## Conventions
 
-Read `.github/skills/mobile-platforms/SKILL.md` for mobile platform triage criteria.
+- Every shell call is a fresh subshell. Persist state to files under `/tmp/gh-aw/agent/`.
+- `$(...)`, `${var@P}`, `-o` and `>` are blocked by the shell guard. Use `| tee file` and write complex commands to a script, then `bash script.sh`.
+- URL-encode OData `$` params (`%24top`).
 
-For deeper Helix investigation patterns (console log analysis, pass/fail comparison, machine-specific diagnosis, XHarness false failure detection), fetch and read the helix-investigation skill from arcade-skills:
+## Step 1: Load skills
 
-```bash
-curl -sL "https://raw.githubusercontent.com/dotnet/arcade-skills/f866c30a5b58e76492c90fd089082eb5f7e81a87/plugins/dotnet-dnceng/skills/helix-investigation/SKILL.md" -o /tmp/gh-aw/agent/helix-investigation-skill.md
-cat /tmp/gh-aw/agent/helix-investigation-skill.md
-```
-
-Use the helix-investigation workflow (especially Steps 3-6: console log download, failure pattern matching, pass/fail comparison, root cause categorization) when drilling into individual Helix work item failures in Step 5.
-
-## Step 2: Get the latest build ID
-
-**Important conventions for this workflow environment:**
-
-- Each shell tool call runs in a fresh subshell -- environment variables do NOT persist across calls. Store intermediate values in files under `/tmp/gh-aw/agent/`.
-- Command substitution like `$(cat file)` and parameter expansion like `${var@P}` are blocked by the agent's shell guard. Instead: either write the full command to a script file and `bash` it, or use `xargs -I{}` to inject file contents.
-- **The shell guard also blocks `-o` and `>` output redirection in direct curl/command calls.** Always use `| tee /path/to/file` instead of `-o file` or `> file` for saving output.
-- OData query params that start with `$` (e.g. `$top`) must be URL-encoded as `%24top` in curl URLs to avoid the shell guard.
+Read `.github/skills/mobile-platforms/SKILL.md`. Then fetch the helix-investigation skill for console-log drill-down:
 
 ```bash
 mkdir -p /tmp/gh-aw/agent
-curl -sL "https://dev.azure.com/dnceng-public/public/_apis/build/builds?definitions=154&branchName=refs/heads/main&statusFilter=completed&%24top=1&api-version=7.1" | tee /tmp/gh-aw/agent/build.json | jq -r '.value[0] | "id=\(.id) result=\(.result)"'
+curl -sL "https://raw.githubusercontent.com/dotnet/arcade-skills/f866c30a5b58e76492c90fd089082eb5f7e81a87/plugins/dotnet-dnceng/skills/helix-investigation/SKILL.md" | tee /tmp/gh-aw/agent/helix-investigation-skill.md > /dev/null
 ```
 
-Then extract the build ID and result (use `tee` instead of `>`):
+## Step 2: Resolve the latest completed build
 
 ```bash
+curl -sL "https://dev.azure.com/dnceng-public/public/_apis/build/builds?definitions=154&branchName=refs/heads/main&statusFilter=completed&%24top=1&api-version=7.1" | tee /tmp/gh-aw/agent/build.json | jq -r '.value[0] | "id=\(.id) result=\(.result)"'
 jq -r '.value[0].id'     /tmp/gh-aw/agent/build.json | tee /tmp/gh-aw/agent/build_id.txt
 jq -r '.value[0].result' /tmp/gh-aw/agent/build.json | tee /tmp/gh-aw/agent/build_result.txt
 ```
 
-If `build_result.txt` contains `succeeded`, stop -- nothing to fix.
+If `build_result.txt` is `succeeded`, stop.
 
-To use the build id in a later command, write a small script that reads the file and run it:
+Record the build ID -- it MUST appear in every output (PR body, issue body, comment).
+
+Run ci-analysis via a helper script (the shell guard blocks `$(...)` inline):
 
 ```bash
 cat > /tmp/gh-aw/agent/run-ci-analysis.sh <<'SH'
@@ -151,102 +142,93 @@ cat > /tmp/gh-aw/agent/run-ci-analysis.sh <<'SH'
 set -e
 BUILD_ID=$(cat /tmp/gh-aw/agent/build_id.txt)
 pwsh .github/skills/ci-analysis/scripts/Get-CIStatus.ps1 -BuildId "$BUILD_ID" -ShowLogs > /tmp/gh-aw/agent/ci-analysis.txt 2>&1
-echo "ci-analysis.txt size: $(wc -c < /tmp/gh-aw/agent/ci-analysis.txt)"
 SH
 bash /tmp/gh-aw/agent/run-ci-analysis.sh
+sed -n '/\[CI_ANALYSIS_SUMMARY\]/,/^$/p' /tmp/gh-aw/agent/ci-analysis.txt | tee /tmp/gh-aw/agent/ci-summary.json > /dev/null
 ```
 
-The script is run via `bash scriptpath` (which is allowed), so the `$(...)` inside the script file is not flagged by the top-level shell guard.
+## Step 3: Filter to mobile jobs
 
-## Step 3: Analyze failures with ci-analysis
+Keep only failures whose job names match `ios`, `iossimulator`, `ioslike`, `tvos`, `maccatalyst`, or `android`. If none, stop.
 
-`ci-analysis.txt` was written by the Step 2 helper script. Extract the JSON summary:
+## Step 4: Drill into Helix console logs
+
+For each failed mobile work item, follow the helix-investigation skill: download the `/console` log (pass `-L`; redirects to `*.blob.core.windows.net`), extract the failing test FQN, the assertion/exception, the Helix machine name, and whether the same failure repeats across jobs or prior builds.
+
+Capture the earliest build where the failure first appeared (walk the last ~5 builds of definition 154 if needed).
+
+## Step 5: Deduplicate before acting
+
+**Hard rule: never open a new issue or PR when one already covers the failure.**
+
+Search first (do all three):
 
 ```bash
-sed -n '/\[CI_ANALYSIS_SUMMARY\]/,/^$/p' /tmp/gh-aw/agent/ci-analysis.txt > /tmp/gh-aw/agent/ci-summary.json
-head -c 4000 /tmp/gh-aw/agent/ci-summary.json
+gh search issues "<test FQN or error key>" --repo dotnet/runtime --state open --limit 20
+gh search prs    "<test FQN or error key>" --repo dotnet/runtime --state open --limit 20
+gh search prs    "[mobile]"                 --repo dotnet/runtime --state open --limit 20
 ```
 
-Parse the `[CI_ANALYSIS_SUMMARY]` JSON to get `errorCategory`, `errorSnippet`, and `helixWorkItems` per failed job.
+Decide:
 
-## Step 4: Filter to mobile failures
+- **Matching open PR exists** → do nothing. At most, add one comment to the related tracking issue linking the PR, only if no such link is already there.
+- **Matching open tracking issue exists** → comment **only if** you bring new information the issue does not have: a new build number, a new Helix machine, a platform/arch not previously listed, or a distinct error signature. Use the short template in Step 7. If no new info, emit `noop`.
+- **No match** → proceed to Step 6.
 
-From the ci-analysis output, keep only failures whose job names match mobile platforms:
+## Step 6: Classify and act
 
-- Apple mobile: `ios`, `tvos`, `maccatalyst`, `ioslike`, `ioslikesimulator`
-- Android: `android`
+Classify using `.github/skills/mobile-platforms/SKILL.md`:
 
-Ignore failures in non-mobile jobs. If no mobile jobs failed, stop.
+1. **Infrastructure** (provisioning/timeout/device-lost/network/Helix agent): open a tracking issue (labels `area-Infrastructure` + `os-*`). No code fix.
+2. **Platform-unsupported test**: auto-fix with `[SkipOnPlatform(...)]` or a narrowed `[ConditionalFact]` predicate on the specific test.
+3. **AOT/reflection-dependent test**: auto-fix by guarding with `PlatformDetection.IsReflectionEmitSupported` / `IsNotBuiltWithAggressiveTrimming`.
+4. **Test project excludes a mobile TFM incorrectly**: auto-fix via `TargetFrameworks` / `<Compile Condition>` in the `.csproj`.
+5. **Code regression on `main`**: open a tracking issue linking the suspect commit (`git log --oneline --since='3 days ago' -- <path>`). Do not revert.
+6. **Native crash (SIGSEGV/SIGBUS/SIGABRT) or >3 unrelated test assemblies failing**: tracking issue only, no auto-fix.
 
-## Step 5: Drill into Helix failures
+Auto-fix mechanics:
 
-**You MUST drill into Helix console logs before classifying any failure.** Follow the helix-investigation skill workflow (loaded in Step 1) for each failed mobile work item:
-
-1. Enumerate Helix work items from ci-analysis output (job ID, work item name, exit code, machine)
-2. Download console logs and test result files per the skill's Step 3
-3. Analyze failure patterns per the skill's Step 4 (XHarness exit codes, false failure detection, timeout signatures)
-4. Compare passing vs failing runs per the skill's Step 5 for intermittent failures
-
-**Network note:** The `/console` endpoint on `helix.dot.net` redirects to Azure Blob Storage (`helixr*.blob.core.windows.net`, allowed by the network policy). Pass `-L` to `curl` to follow the redirect. Use `| tee /path/to/file` to save output (the shell guard blocks `-o` and `>` redirection). For complex commands with `$(...)`, write them to a script file and run with `bash`.
-
-Capture for each failure: (a) the failing test FQN, (b) the assertion or exception, (c) the platform/arch, (d) whether the same work item repeats across jobs/runs.
-
-## Step 6: Triage each failure
-
-Before classifying, search for existing open PRs that already fix these failures:
-
-```
-gh search prs "[mobile]" --repo dotnet/runtime --state open --limit 10
+```bash
+git fetch origin main
+git switch -c mobile-fix-<slug> origin/main
+# edit only src/** test files or their .csproj
+git diff --name-only --cached   # abort if anything is under .github/, eng/, docs/, or repo root
+git add <specific file>
 ```
 
-Also search for PRs referencing the specific test name or library. If a fix PR already exists, reference it in your comment instead of creating a duplicate.
+Required labels on the PR/issue (pass via safeoutputs):
+- OS labels matching affected platforms: `os-ios`, `os-tvos`, `os-maccatalyst`, `os-android`.
+- One `area-*` label matching the test's library.
+- `arch-arm64` / `arch-x64` only if the failure is architecture-specific.
 
-Classify each mobile failure using the criteria from `.github/skills/mobile-platforms/SKILL.md` and the console log content you fetched:
+## Step 7: Output format (keep it short)
 
-1. **Known build error** (ci-analysis already matched it): add a comment on that issue with the new build link and the work item name. If the root cause has an actionable code fix, proceed to Step 7. If it is purely infrastructure, stop here for this failure.
-2. **Infrastructure**: provisioning/timeout/device-lost/network/Helix agent errors. Report on an existing tracking issue (or create one) with labels `area-Infrastructure` + the mobile `os-*` label. Do not attempt a code fix.
-3. **Code regression**: a test that was passing started failing after a recent commit on `main`. Start with `git log --oneline --since='3 days ago' -- <likely-path>` and inspect diffs. If nothing matches, widen the window or check for intermittent patterns.
-4. **Platform-unsupported test**: a test that depends on behavior mobile platforms cannot support (process spawning, dynamic code emit where AOT-only, filesystem semantics, desktop JIT). The test was previously passing only because the platform was not exercised.
+**Every PR body, issue body, and comment must include the build number** (`dev.azure.com/dnceng-public/public/_build/results?buildId=<id>`).
 
-## Step 7: Apply auto-fixes (do not emit noop)
+**PR body -- exactly three short paragraphs, in this order, nothing else:**
 
-You are authorized -- and expected -- to open a draft PR directly for the following well-bounded patterns. Do **not** emit `noop` or only file an issue for these; commit the minimal change and open a draft PR.
+```
+**Why.** <1-3 sentences: failure class, fix class, and why this specific change is correct.>
 
-**Auto-fixable patterns:**
+**Impact.** <1-2 sentences: affected platforms (os-*, arch), affected test FQN(s), runtime-extra-platforms build #<id>.>
 
-- **Platform-unsupported test**: add `[SkipOnPlatform(TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst | TestPlatforms.Android, "<reason>")]` to the specific `[Fact]`/`[Theory]`, or narrow an existing `[ConditionalFact]` predicate. Prefer per-test attributes over disabling the whole class.
-- **Test that requires reflection/dynamic-code on AOT mobile**: guard with `[ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]` or `IsNotBuiltWithAggressiveTrimming` as appropriate.
-- **Flaky test with a clear retry/timing fix**: increase the timeout or add a retry only if the existing pattern in the same file already uses one; otherwise file an issue with `[ActiveIssue("https://github.com/dotnet/runtime/issues/NNN", TestPlatforms.<plat>)]` referencing a newly-created tracking issue.
-- **Test project that should exclude a mobile TFM**: adjust `TargetFrameworks`, `TestRuntime`, or the `<Compile Condition>` in the `.csproj` to exclude the unsupported platform, matching conventions already used in sibling projects.
+**Trace.** First seen in build #<earliest-id>; recurring in #<id>. Helix machine(s): <names>. Error:
+```
+<short sanitized console excerpt, <=15 lines>
+```
+```
 
-For each auto-fix:
+**Tracking-issue body -- same three paragraphs** (Why → what is failing and suspected cause; Impact → platforms + tests + build #<id>; Trace → first build, recurring builds, Helix machines, sanitized excerpt).
 
-1. **Branch from `main`, not from the workflow branch.** The safe-outputs patch is computed as `branch HEAD vs main`, so if you branch from the current checkout you will inadvertently pull unrelated `.github/` diffs into the PR and trigger the protected-file fallback. Use:
-   ```bash
-   git fetch origin main
-   git switch -c mobile-fix-<short-slug> origin/main
-   ```
-   Then make the edit.
-2. **Touch only `src/` test files and their `.csproj`.** Never stage anything under `.github/`, `eng/`, `docs/`, `global.json`, or the repo root. Before committing, run `git diff --name-only --cached` and abort if any path starts with `.github/`.
-3. Use `git add <specific file>` -- never `git add -A` or `git add .`.
-4. Verify the edit syntactically with `grep`/`cat`. Do not attempt `./build.sh` -- it is too heavy for the agent and CI will validate.
-5. Open a draft PR with title `[mobile] <short description>`. The PR body must include: the build link, the failing test name, the Helix job+work item, the console log excerpt (sanitized), and the rationale for the fix class.
-6. **Set `labels` on the PR/issue** (pass them in the `create_pull_request` / `create_issue` safeoutputs call). Required labels:
-   - **One or more OS labels** matching the affected platforms: `os-ios`, `os-tvos`, `os-maccatalyst`, `os-android`. If a fix applies to all Apple mobile, include `os-ios`, `os-tvos`, `os-maccatalyst`. If it affects all mobile, also include `os-android`.
-   - **One `area-*` label** matching the test's library (e.g., `area-System.IO.Compression`, `area-System.Runtime.Loader`, `area-Infrastructure` for build/infra). Pick from the existing repo labels -- do not invent new ones.
-   - Optional architecture label (`arch-arm64`, `arch-x64`) only if the failure is architecture-specific.
-7. Post a comment on any related existing issue linking the PR.
+**Comment on an existing issue -- single short paragraph**:
+```
+Recurred in runtime-extra-platforms build #<id> on <os-*> (<arch>). Helix machine(s): <names>. <one-line new signal if any>.
+```
 
-**Do NOT auto-fix (open a tracking issue instead):**
-
-- Native crashes (SIGSEGV/SIGBUS/SIGABRT) in the runtime itself.
-- Failures in >3 unrelated test assemblies suggesting a product regression -- file one issue linking all failures and ping the area owners via label, not via @mention.
-- Anything touching files under `protected-files` or `protected-path-prefixes` (safe-outputs will auto-fallback to an issue).
+No preambles, no "I investigated", no bullet lists of steps taken. Do not paste the full console log. Do not include the three section headings more than once.
 
 ## Step 8: Submit
 
-If you found an existing fix PR in Step 6, add a comment on the tracking issue linking it instead of creating a duplicate.
-
-Only emit `noop` if, after Step 5 drill-down, the failure falls into none of the categories above **and** you have already filed or commented on an appropriate issue. A `noop` with "manual investigation required" is not acceptable -- in that case, file a tracking issue with the console log excerpt.
-
-If you learned something generalizable during investigation, add it as a comment on the relevant issue so the team can later fold it into `.github/skills/mobile-platforms/SKILL.md`.
+- Emit at most one artifact per distinct failure signature.
+- If Step 5 found an existing fix PR, emit `noop` (the single comment from Step 5 is sufficient).
+- If no classification fits and no issue exists, open a short tracking issue using the Step 7 template -- do not emit `noop` with "manual investigation required".
