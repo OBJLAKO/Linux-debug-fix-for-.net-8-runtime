@@ -103,33 +103,30 @@ network:
 
 # Mobile Platform Failure Scanner
 
-Scan two pipelines on `main` for Apple mobile and Android failures, triage, and propose fixes:
+Scan two AzDO pipelines in `dnceng-public/public` on `main` for Apple mobile and Android failures. Triage, dedup, and act.
 
-- **`runtime`** (AzDO definition **129**, `dnceng-public/public`) -- main rolling CI. Public mirror of the internal pipeline `dnceng/internal` def 1104.
-- **`runtime-extra-platforms`** (AzDO definition **154**, `dnceng-public/public`) -- daily extra-platforms coverage.
+- **`runtime`** (def **129**) — main rolling CI. Public mirror of internal `dnceng/internal` def 1104.
+- **`runtime-extra-platforms`** (def **154**) — full mobile matrix, daily.
 
-Both definitions live in the same public project and are anonymously accessible. Scan both in every run.
-
-Sanitize log excerpts (user paths, tokens, auth headers) before posting anything.
+Both are anon-accessible. Sanitize log excerpts (paths/tokens/auth) before posting.
 
 ## Conventions
 
-- Every shell call is a fresh subshell. Persist state to files under `/tmp/gh-aw/agent/`.
-- `$(...)`, `${var@P}`, `-o` and `>` are blocked by the shell guard. Use `| tee file` and write complex commands to a script, then `bash script.sh`.
+- Every shell call is a fresh subshell. Persist state under `/tmp/gh-aw/agent/`.
+- `$(...)`, `${var@P}`, `-o`, `>` are blocked. Use `| tee` and script files (`bash script.sh`).
 - URL-encode OData `$` params (`%24top`).
 
 ## Step 1: Load skills
 
-Read `.github/skills/mobile-platforms/SKILL.md`. Then fetch the helix-investigation skill for console-log drill-down:
-
 ```bash
 mkdir -p /tmp/gh-aw/agent
-curl -sL "https://raw.githubusercontent.com/dotnet/arcade-skills/f866c30a5b58e76492c90fd089082eb5f7e81a87/plugins/dotnet-dnceng/skills/helix-investigation/SKILL.md" | tee /tmp/gh-aw/agent/helix-investigation-skill.md > /dev/null
+curl -sL "https://raw.githubusercontent.com/dotnet/arcade-skills/f866c30a5b58e76492c90fd089082eb5f7e81a87/plugins/dotnet-dnceng/skills/helix-investigation/SKILL.md" \
+  | tee /tmp/gh-aw/agent/helix-investigation-skill.md > /dev/null
 ```
 
-## Step 2: Resolve the latest completed build for each pipeline
+Also read `.github/skills/mobile-platforms/SKILL.md`.
 
-Fetch the latest completed build for both definitions:
+## Step 2: Fetch latest completed builds
 
 ```bash
 for DEF in 129 154; do
@@ -139,25 +136,17 @@ for DEF in 129 154; do
 done
 ```
 
-If both results are `succeeded`, stop.
-
-Record each build ID -- it MUST appear in every output (PR body, issue body, comment) that references that pipeline.
-
-Run ci-analysis for each failed pipeline (skip pipelines whose latest build succeeded):
+If both succeeded, stop. Otherwise run ci-analysis per failed pipeline:
 
 ```bash
 cat > /tmp/gh-aw/agent/run-ci-analysis.sh <<'SH'
 #!/bin/bash
 set -e
 for DEF in 129 154; do
-  RESULT=$(jq -r '.value[0].result' "/tmp/gh-aw/agent/build-${DEF}.json")
-  if [ "$RESULT" = "succeeded" ]; then
-    echo "def=${DEF}: succeeded, skipping" > "/tmp/gh-aw/agent/ci-analysis-${DEF}.txt"
-    continue
-  fi
-  BUILD_ID=$(jq -r '.value[0].id' "/tmp/gh-aw/agent/build-${DEF}.json")
-  echo "def=${DEF} build=${BUILD_ID}"
-  pwsh .github/skills/ci-analysis/scripts/Get-CIStatus.ps1 -BuildId "$BUILD_ID" -ShowLogs \
+  R=$(jq -r '.value[0].result' "/tmp/gh-aw/agent/build-${DEF}.json")
+  [ "$R" = "succeeded" ] && { echo "def=${DEF}: ok" > "/tmp/gh-aw/agent/ci-analysis-${DEF}.txt"; continue; }
+  B=$(jq -r '.value[0].id' "/tmp/gh-aw/agent/build-${DEF}.json")
+  pwsh .github/skills/ci-analysis/scripts/Get-CIStatus.ps1 -BuildId "$B" -ShowLogs \
     > "/tmp/gh-aw/agent/ci-analysis-${DEF}.txt" 2>&1
   sed -n '/\[CI_ANALYSIS_SUMMARY\]/,/^$/p' "/tmp/gh-aw/agent/ci-analysis-${DEF}.txt" \
     > "/tmp/gh-aw/agent/ci-summary-${DEF}.json"
@@ -166,23 +155,22 @@ SH
 bash /tmp/gh-aw/agent/run-ci-analysis.sh
 ```
 
-## Step 3: Filter to mobile jobs
+Record each build ID — required in every emitted artifact that references that pipeline.
 
-For each pipeline's `ci-summary-<def>.json`, keep only failures whose job names match `ios`, `iossimulator`, `ioslike`, `tvos`, `maccatalyst`, or `android`. Treat each pipeline's results as a separate input set going into Step 4. If neither pipeline has mobile failures, stop.
+## Step 3: Filter mobile jobs
 
-Note: the `runtime` pipeline (def 129) runs a different job shape than `runtime-extra-platforms` (def 154). Typical mobile jobs in def 129 include `Build ios-arm64 Release AllSubsets_NativeAOT_Smoke`, `Build android-arm64 Release AllSubsets_Mono`, etc. Jobs in def 154 are the full-coverage matrix documented in `.github/skills/mobile-platforms/SKILL.md`.
+Keep failures whose job name matches `ios|iossimulator|ioslike|tvos|maccatalyst|android`. Treat each pipeline as a separate input. If neither has mobile failures, stop.
 
-## Step 4: Drill into Helix console logs
+## Step 4: Drill and bucket
 
-For each failed mobile work item, follow the helix-investigation skill: download the `/console` log (pass `-L`; redirects to `*.blob.core.windows.net`), extract the failing test FQN, the assertion/exception, the Helix machine name, and whether the same failure repeats across jobs or prior builds.
+Per failed mobile work item (helix-investigation skill): download `/console` with `curl -L` (redirects to `*.blob.core.windows.net`), extract failing test FQN, exception/assertion, Helix machine, and whether the signature repeats across jobs or recent builds.
 
-Capture the earliest build where the failure first appeared. Query the last ~20 builds of the **originating definition** (129 or 154) to find it:
+Find earliest occurrence by scanning the last ~20 builds of the originating definition:
 
 ```bash
 cat > /tmp/gh-aw/agent/recent-builds.sh <<'SH'
 #!/bin/bash
-set -e
-DEF="${1:?definition id required}"
+DEF="${1:?def required}"
 curl -sL "https://dev.azure.com/dnceng-public/public/_apis/build/builds?definitions=${DEF}&branchName=refs/heads/main&statusFilter=completed&%24top=20&api-version=7.1" \
   | jq -r '.value[] | "\(.id)|\(.result)|\(.finishTime)"'
 SH
@@ -190,15 +178,13 @@ bash /tmp/gh-aw/agent/recent-builds.sh 129 | tee /tmp/gh-aw/agent/recent-builds-
 bash /tmp/gh-aw/agent/recent-builds.sh 154 | tee /tmp/gh-aw/agent/recent-builds-154.txt
 ```
 
-**Systemic-failure short-circuit.** If >10 mobile jobs fail in the current build with the same signature, OR the last 5+ consecutive builds all failed, treat this as systemic. Skip per-work-item drill-down (one representative console log is enough) and jump to Step 5 targeting the central mobile tracking issue.
+**Systemic short-circuit:** if >10 mobile jobs fail with the same signature or 5+ consecutive builds failed, treat as systemic. Skip per-work-item drill-down (one representative log suffices) and aim at the central mobile tracking issue.
 
-**Group failures by signature.** Before Step 5, bucket work-item failures by test FQN or distinct error signature. Each bucket is handled independently in Steps 5-8: a PR covering bucket A does not excuse silence on bucket B. Ignore buckets with <2 occurrences only if the error is clearly a per-machine infra blip.
+**Bucket by signature:** group failures by test FQN or distinct error. Each bucket is handled independently — a PR covering bucket A does not excuse silence on bucket B. Drop buckets with <2 occurrences unless clearly a per-machine infra blip.
 
-## Step 5: Deduplicate before acting
+## Step 5: Deduplicate
 
 **Hard rule: never open a new issue or PR when one already covers the failure.**
-
-Search first (do all three):
 
 ```bash
 gh search issues "<test FQN or error key>" --repo dotnet/runtime --state open --limit 20
@@ -207,23 +193,20 @@ gh search prs    "[mobile]"                 --repo dotnet/runtime --state open -
 ```
 
 Decide:
-
-- **Matching open PR exists** → `noop`. Add a comment to the related tracking issue linking the PR only if that link is not already present.
-- **Matching open tracking issue exists** → comment **only if** you bring new information: a build number the issue does not already cite, a new Helix machine, a platform/arch not yet listed, a new failure pattern (e.g., N consecutive failures), or a distinct error signature. Use the template in Step 7. If no new info, `noop`.
-- **No match** → proceed to Step 6.
-
-Before posting a comment, read the issue's latest ~10 comments (`gh issue view <n> --repo dotnet/runtime --comments`). If the most recent comment already cites the current build ID, `noop`.
+- **Matching open PR** → `noop`. Link it from the tracking issue only if the link is not already there.
+- **Matching open issue** → comment **only if** you add new info: build number not already cited, new Helix machine, new platform/arch, new consecutive-failure count, or new error signature. Read the last ~10 comments (`gh issue view <n> --comments`) first; if the latest already cites the current build, `noop`.
+- **No match** → Step 6.
 
 ## Step 6: Classify and act
 
-Classify using `.github/skills/mobile-platforms/SKILL.md`:
+Using `.github/skills/mobile-platforms/SKILL.md`:
 
-1. **Infrastructure** (provisioning/timeout/device-lost/network/Helix agent): open a tracking issue (labels `area-Infrastructure` + `os-*`). No code fix.
-2. **Platform-unsupported test**: auto-fix with `[SkipOnPlatform(...)]` or a narrowed `[ConditionalFact]` predicate on the specific test.
-3. **AOT/reflection-dependent test**: auto-fix by guarding with `PlatformDetection.IsReflectionEmitSupported` / `IsNotBuiltWithAggressiveTrimming`.
-4. **Test project excludes a mobile TFM incorrectly**: auto-fix via `TargetFrameworks` / `<Compile Condition>` in the `.csproj`.
-5. **Code regression on `main`**: open a tracking issue linking the suspect commit (`git log --oneline --since='3 days ago' -- <path>`). Do not revert.
-6. **Native crash (SIGSEGV/SIGBUS/SIGABRT) or >3 unrelated test assemblies failing**: tracking issue only, no auto-fix.
+1. **Infrastructure** (provisioning/timeout/device-lost/network/Helix): tracking issue only, labels `area-Infrastructure` + `os-*`.
+2. **Platform-unsupported test**: fix with `[SkipOnPlatform(...)]` or narrowed `[ConditionalFact]`.
+3. **AOT/reflection**: guard with `PlatformDetection.IsReflectionEmitSupported` / `IsNotBuiltWithAggressiveTrimming`.
+4. **Wrong `TargetFrameworks` / `<Compile Condition>`**: fix in the `.csproj`.
+5. **Code regression on `main`**: tracking issue linking the suspect commit. No revert.
+6. **Native crash (SIGSEGV/SIGBUS/SIGABRT)** or **>3 unrelated assemblies failing**: tracking issue only.
 
 Auto-fix mechanics:
 
@@ -231,47 +214,50 @@ Auto-fix mechanics:
 git fetch origin main
 git switch -c mobile-fix-<slug> origin/main
 # edit only src/** test files or their .csproj
-git diff --name-only --cached   # abort if anything is under .github/, eng/, docs/, or repo root
-git add <specific file>
+git diff --name-only --cached  # abort if anything is under .github/, eng/, docs/, or repo root
 ```
 
-Required labels on the PR/issue (pass via safeoutputs):
-- OS labels matching affected platforms: `os-ios`, `os-tvos`, `os-maccatalyst`, `os-android`.
-- One `area-*` label matching the test's library.
-- `arch-arm64` / `arch-x64` only if the failure is architecture-specific.
+Labels on every PR/issue:
+- `os-ios` / `os-tvos` / `os-maccatalyst` / `os-android` for affected platforms.
+- One `area-*` matching the test's library.
+- `arch-arm64` / `arch-x64` only if arch-specific.
 
 ## Step 7: Output format
 
-**Every PR body, issue body, and comment uses the same three-paragraph template. Nothing else. No preambles, no step-by-step narration, no full console dumps.**
+Every PR, issue, and comment uses exactly this template — verbatim headers, in this order:
 
-Always include the originating pipeline's build number in the Impact paragraph. Use the following format to disambiguate:
-- For def 129: `runtime build #<id>`
-- For def 154: `runtime-extra-platforms build #<id>`
+````
+## Background
 
-If the same signature fails on both pipelines in the current scan, cite both build numbers.
+2–4 sentences. What is failing (test FQN or job name), when it started (first observed build id), suspected root cause. For a PR, describe the fix. For a comment on an existing issue, state explicitly what new info is being added.
+
+## Impact
+
+3–6 bullets:
+- **Pipeline and build:** `runtime build #<id>` and/or `runtime-extra-platforms build #<id>`.
+- **Platforms:** os-*/arch tuples (`android-arm64`, `ios-arm64`, ...).
+- **Jobs:** failing job names (≤5, then "... and N more").
+- **Tests:** failing FQNs/assembly (≤5, "... and N more"). Omit for build/infra failures.
+- **Severity:** systemic (cite consecutive-build count) vs. isolated.
+- **Helix machine(s):** only if machine-specific.
+
+## Trace
+
+- First seen: build #<earliest-id>.
+- Most recent: build #<id>.
+- Failing work item(s)/job(s): <names, ≤5>.
+- Sanitized excerpt (≤20 lines, fenced):
 
 ```
-**Why.** <1-3 sentences: failure class + the fix (for PRs) or suspected cause (for issues/comments).>
-
-**Impact.** <1-2 sentences: affected platforms (os-*, arch), affected test FQN(s) or assembly, originating pipeline and build (e.g. "runtime build #<id>" and/or "runtime-extra-platforms build #<id>"). For systemic failures, cite the consecutive-build pattern (e.g. "last 20 builds all failed").>
-
-**Trace.** First seen in build #<earliest-id>; most recent #<id>. Helix machine(s): <names>. Sanitized excerpt:
+<compiler error, exception stack, or XHarness exit + message>
 ```
-<<=15 lines from console log or test output>
-```
-```
+````
 
-Hard caps:
-- Total body ≤ 40 lines.
-- Error excerpt ≤ 15 lines.
-- ≤ 5 test/assembly names in Impact; if more, use "... and N more".
-- No @mentions. No markdown tables unless reporting >1 build recurrence.
-
-The same template applies whether opening a PR, opening an issue, or commenting on an existing issue. The only difference is what goes in Why: for a comment, Why states why *this* comment adds value (what new info).
+Caps: body ≤60 lines, excerpt ≤20 lines, ≤5 names per list. No @mentions. No tables unless reporting the same failure across multiple builds/pipelines.
 
 ## Step 8: Submit
 
-- Emit at most one artifact per distinct failure signature.
-- For systemic failures (Step 4 short-circuit), the single comment on the central tracking issue is the final output. Do not also open sibling issues.
-- Do not emit both `add_comment` and `noop` for the same failure.
-- If no classification fits and no issue exists, open a short tracking issue using the Step 7 template -- do not emit `noop` with "manual investigation required".
+- One artifact per distinct signature.
+- Systemic short-circuit → one comment on the central tracking issue; no sibling issues.
+- Never emit both `add_comment` and `noop` for the same failure.
+- If no classification fits and no issue exists, open a tracking issue using Step 7. Do not emit `noop` with "manual investigation required".
