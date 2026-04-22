@@ -65,7 +65,7 @@ sudo apt-get install clang llvm liblttng-ust-dev cmake ninja-build python3
 ### Build CoreCLR only
 
 ```bash
-./build.sh -subset clr -c Release
+./build.sh -subset clr.runtime -c Release
 ```
 
 Binaries will be in `artifacts/bin/coreclr/linux.x64.Release/`.
