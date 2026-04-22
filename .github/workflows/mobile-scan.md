@@ -103,7 +103,12 @@ network:
 
 # Mobile Platform Failure Scanner
 
-Scan the `runtime-extra-platforms` pipeline (AzDO definition 154, org `dnceng-public`, project `public`) on `main` for Apple mobile and Android failures, triage them, and propose fixes.
+Scan two pipelines on `main` for Apple mobile and Android failures, triage, and propose fixes:
+
+- **`runtime`** (AzDO definition **129**, `dnceng-public/public`) -- main rolling CI. Public mirror of the internal pipeline `dnceng/internal` def 1104.
+- **`runtime-extra-platforms`** (AzDO definition **154**, `dnceng-public/public`) -- daily extra-platforms coverage.
+
+Both definitions live in the same public project and are anonymously accessible. Scan both in every run.
 
 Sanitize log excerpts (user paths, tokens, auth headers) before posting anything.
 
@@ -122,49 +127,67 @@ mkdir -p /tmp/gh-aw/agent
 curl -sL "https://raw.githubusercontent.com/dotnet/arcade-skills/f866c30a5b58e76492c90fd089082eb5f7e81a87/plugins/dotnet-dnceng/skills/helix-investigation/SKILL.md" | tee /tmp/gh-aw/agent/helix-investigation-skill.md > /dev/null
 ```
 
-## Step 2: Resolve the latest completed build
+## Step 2: Resolve the latest completed build for each pipeline
+
+Fetch the latest completed build for both definitions:
 
 ```bash
-curl -sL "https://dev.azure.com/dnceng-public/public/_apis/build/builds?definitions=154&branchName=refs/heads/main&statusFilter=completed&%24top=1&api-version=7.1" | tee /tmp/gh-aw/agent/build.json | jq -r '.value[0] | "id=\(.id) result=\(.result)"'
-jq -r '.value[0].id'     /tmp/gh-aw/agent/build.json | tee /tmp/gh-aw/agent/build_id.txt
-jq -r '.value[0].result' /tmp/gh-aw/agent/build.json | tee /tmp/gh-aw/agent/build_result.txt
+for DEF in 129 154; do
+  curl -sL "https://dev.azure.com/dnceng-public/public/_apis/build/builds?definitions=${DEF}&branchName=refs/heads/main&statusFilter=completed&%24top=1&api-version=7.1" \
+    | tee "/tmp/gh-aw/agent/build-${DEF}.json" \
+    | jq -r ".value[0] | \"def=${DEF} id=\(.id) result=\(.result)\""
+done
 ```
 
-If `build_result.txt` is `succeeded`, stop.
+If both results are `succeeded`, stop.
 
-Record the build ID -- it MUST appear in every output (PR body, issue body, comment).
+Record each build ID -- it MUST appear in every output (PR body, issue body, comment) that references that pipeline.
 
-Run ci-analysis via a helper script (the shell guard blocks `$(...)` inline):
+Run ci-analysis for each failed pipeline (skip pipelines whose latest build succeeded):
 
 ```bash
 cat > /tmp/gh-aw/agent/run-ci-analysis.sh <<'SH'
 #!/bin/bash
 set -e
-BUILD_ID=$(cat /tmp/gh-aw/agent/build_id.txt)
-pwsh .github/skills/ci-analysis/scripts/Get-CIStatus.ps1 -BuildId "$BUILD_ID" -ShowLogs > /tmp/gh-aw/agent/ci-analysis.txt 2>&1
+for DEF in 129 154; do
+  RESULT=$(jq -r '.value[0].result' "/tmp/gh-aw/agent/build-${DEF}.json")
+  if [ "$RESULT" = "succeeded" ]; then
+    echo "def=${DEF}: succeeded, skipping" > "/tmp/gh-aw/agent/ci-analysis-${DEF}.txt"
+    continue
+  fi
+  BUILD_ID=$(jq -r '.value[0].id' "/tmp/gh-aw/agent/build-${DEF}.json")
+  echo "def=${DEF} build=${BUILD_ID}"
+  pwsh .github/skills/ci-analysis/scripts/Get-CIStatus.ps1 -BuildId "$BUILD_ID" -ShowLogs \
+    > "/tmp/gh-aw/agent/ci-analysis-${DEF}.txt" 2>&1
+  sed -n '/\[CI_ANALYSIS_SUMMARY\]/,/^$/p' "/tmp/gh-aw/agent/ci-analysis-${DEF}.txt" \
+    > "/tmp/gh-aw/agent/ci-summary-${DEF}.json"
+done
 SH
 bash /tmp/gh-aw/agent/run-ci-analysis.sh
-sed -n '/\[CI_ANALYSIS_SUMMARY\]/,/^$/p' /tmp/gh-aw/agent/ci-analysis.txt | tee /tmp/gh-aw/agent/ci-summary.json > /dev/null
 ```
 
 ## Step 3: Filter to mobile jobs
 
-Keep only failures whose job names match `ios`, `iossimulator`, `ioslike`, `tvos`, `maccatalyst`, or `android`. If none, stop.
+For each pipeline's `ci-summary-<def>.json`, keep only failures whose job names match `ios`, `iossimulator`, `ioslike`, `tvos`, `maccatalyst`, or `android`. Treat each pipeline's results as a separate input set going into Step 4. If neither pipeline has mobile failures, stop.
+
+Note: the `runtime` pipeline (def 129) runs a different job shape than `runtime-extra-platforms` (def 154). Typical mobile jobs in def 129 include `Build ios-arm64 Release AllSubsets_NativeAOT_Smoke`, `Build android-arm64 Release AllSubsets_Mono`, etc. Jobs in def 154 are the full-coverage matrix documented in `.github/skills/mobile-platforms/SKILL.md`.
 
 ## Step 4: Drill into Helix console logs
 
 For each failed mobile work item, follow the helix-investigation skill: download the `/console` log (pass `-L`; redirects to `*.blob.core.windows.net`), extract the failing test FQN, the assertion/exception, the Helix machine name, and whether the same failure repeats across jobs or prior builds.
 
-Capture the earliest build where the failure first appeared. Query the last ~20 builds of definition 154 to find it:
+Capture the earliest build where the failure first appeared. Query the last ~20 builds of the **originating definition** (129 or 154) to find it:
 
 ```bash
 cat > /tmp/gh-aw/agent/recent-builds.sh <<'SH'
 #!/bin/bash
 set -e
-curl -sL "https://dev.azure.com/dnceng-public/public/_apis/build/builds?definitions=154&branchName=refs/heads/main&statusFilter=completed&%24top=20&api-version=7.1" \
+DEF="${1:?definition id required}"
+curl -sL "https://dev.azure.com/dnceng-public/public/_apis/build/builds?definitions=${DEF}&branchName=refs/heads/main&statusFilter=completed&%24top=20&api-version=7.1" \
   | jq -r '.value[] | "\(.id)|\(.result)|\(.finishTime)"'
 SH
-bash /tmp/gh-aw/agent/recent-builds.sh | tee /tmp/gh-aw/agent/recent-builds.txt
+bash /tmp/gh-aw/agent/recent-builds.sh 129 | tee /tmp/gh-aw/agent/recent-builds-129.txt
+bash /tmp/gh-aw/agent/recent-builds.sh 154 | tee /tmp/gh-aw/agent/recent-builds-154.txt
 ```
 
 **Systemic-failure short-circuit.** If >10 mobile jobs fail in the current build with the same signature, OR the last 5+ consecutive builds all failed, treat this as systemic. Skip per-work-item drill-down (one representative console log is enough) and jump to Step 5 targeting the central mobile tracking issue.
@@ -221,12 +244,16 @@ Required labels on the PR/issue (pass via safeoutputs):
 
 **Every PR body, issue body, and comment uses the same three-paragraph template. Nothing else. No preambles, no step-by-step narration, no full console dumps.**
 
-Always include the `runtime-extra-platforms` build number (`dev.azure.com/dnceng-public/public/_build/results?buildId=<id>`) in the Impact paragraph.
+Always include the originating pipeline's build number in the Impact paragraph. Use the following format to disambiguate:
+- For def 129: `runtime build #<id>`
+- For def 154: `runtime-extra-platforms build #<id>`
+
+If the same signature fails on both pipelines in the current scan, cite both build numbers.
 
 ```
 **Why.** <1-3 sentences: failure class + the fix (for PRs) or suspected cause (for issues/comments).>
 
-**Impact.** <1-2 sentences: affected platforms (os-*, arch), affected test FQN(s) or assembly, runtime-extra-platforms build #<id>. For systemic failures, cite the consecutive-build pattern (e.g. "last 20 builds all failed").>
+**Impact.** <1-2 sentences: affected platforms (os-*, arch), affected test FQN(s) or assembly, originating pipeline and build (e.g. "runtime build #<id>" and/or "runtime-extra-platforms build #<id>"). For systemic failures, cite the consecutive-build pattern (e.g. "last 20 builds all failed").>
 
 **Trace.** First seen in build #<earliest-id>; most recent #<id>. Helix machine(s): <names>. Sanitized excerpt:
 ```

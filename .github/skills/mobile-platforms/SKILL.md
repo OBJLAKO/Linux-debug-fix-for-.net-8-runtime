@@ -13,11 +13,16 @@ Mobile platforms run .NET on devices and simulators/emulators where the host OS 
 
 CoreCLR is the primary runtime. NativeAOT is the default publish framework for ahead-of-time compilation. Mono also runs in CI alongside CoreCLR.
 
-## CI pipeline
+## CI pipelines
 
-Mobile tests run in the `runtime-extra-platforms` pipeline (AzDO definition 154, org `dnceng-public`, project `public`), daily on `main` and on relevant PRs.
+Mobile tests run on two public pipelines in `dnceng-public/public`:
 
-Jobs follow `{platform} {config} {subset}`:
+- **`runtime`** (AzDO definition **129**) -- main rolling CI per-merge on `main` and on PRs. Public mirror of the internal `dnceng/internal` pipeline (definition 1104). Mobile jobs are a subset focused on Smoke / NativeAOT coverage (e.g., `Build ios-arm64 Release AllSubsets_NativeAOT_Smoke`).
+- **`runtime-extra-platforms`** (AzDO definition **154**) -- daily on `main` and on PRs that touch relevant paths. Full mobile matrix.
+
+Both are anonymously accessible via `dev.azure.com/dnceng-public/public/_apis/build/...`.
+
+Jobs in def 154 follow `{platform} {config} {subset}`:
 
 | Platform | Job pattern | Variants |
 |---|---|---|
